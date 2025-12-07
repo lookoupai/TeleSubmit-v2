@@ -162,6 +162,166 @@ if not CHANNEL_ID:
 MODE_MEDIA = 'MEDIA'      # 仅媒体上传
 MODE_DOCUMENT = 'DOCUMENT'  # 仅文档上传
 MODE_MIXED = 'MIXED'      # 混合模式
+MODE_TEXT = 'TEXT'        # 仅纯文本模式
+MODE_ALL = 'ALL'          # 全部模式（文本+媒体+文档）
+
+# ============================================
+# 纯文本投稿配置
+# ============================================
+_text_only_mode_env = os.getenv('TEXT_ONLY_MODE')
+if _text_only_mode_env is not None:
+    TEXT_ONLY_MODE = _text_only_mode_env.lower() in ('true', '1', 'yes')
+else:
+    TEXT_ONLY_MODE = get_config_bool('BOT', 'TEXT_ONLY_MODE', True)
+
+DEFAULT_SUBMIT_MODE = get_env_or_config('DEFAULT_SUBMIT_MODE', 'BOT', 'DEFAULT_SUBMIT_MODE', fallback='TEXT')
+_min_text_length = get_env_or_config('MIN_TEXT_LENGTH', 'BOT', 'MIN_TEXT_LENGTH')
+MIN_TEXT_LENGTH = int(_min_text_length) if _min_text_length else get_config_int('BOT', 'MIN_TEXT_LENGTH', 10)
+_max_text_length = get_env_or_config('MAX_TEXT_LENGTH', 'BOT', 'MAX_TEXT_LENGTH')
+MAX_TEXT_LENGTH = int(_max_text_length) if _max_text_length else get_config_int('BOT', 'MAX_TEXT_LENGTH', 4000)
+
+# ============================================
+# AI 审核配置
+# ============================================
+_ai_review_enabled_env = os.getenv('AI_REVIEW_ENABLED')
+if _ai_review_enabled_env is not None:
+    AI_REVIEW_ENABLED = _ai_review_enabled_env.lower() in ('true', '1', 'yes')
+else:
+    AI_REVIEW_ENABLED = get_config_bool('AI_REVIEW', 'ENABLED', False)
+
+AI_REVIEW_API_BASE = get_env_or_config('AI_REVIEW_API_BASE', 'AI_REVIEW', 'API_BASE_URL', fallback='https://api.openai.com/v1')
+AI_REVIEW_API_KEY = get_env_or_config('AI_REVIEW_API_KEY', 'AI_REVIEW', 'API_KEY', fallback='')
+AI_REVIEW_MODEL = get_env_or_config('AI_REVIEW_MODEL', 'AI_REVIEW', 'MODEL', fallback='gpt-4o-mini')
+_ai_timeout = get_env_or_config('AI_REVIEW_TIMEOUT', 'AI_REVIEW', 'TIMEOUT')
+AI_REVIEW_TIMEOUT = int(_ai_timeout) if _ai_timeout else get_config_int('AI_REVIEW', 'TIMEOUT', 30)
+_ai_retries = get_env_or_config('AI_REVIEW_MAX_RETRIES', 'AI_REVIEW', 'MAX_RETRIES')
+AI_REVIEW_MAX_RETRIES = int(_ai_retries) if _ai_retries else get_config_int('AI_REVIEW', 'MAX_RETRIES', 2)
+
+# 审核主题配置
+AI_REVIEW_CHANNEL_TOPIC = get_env_or_config('AI_REVIEW_CHANNEL_TOPIC', 'AI_REVIEW', 'CHANNEL_TOPIC', fallback='接码服务')
+AI_REVIEW_TOPIC_KEYWORDS = get_env_or_config('AI_REVIEW_TOPIC_KEYWORDS', 'AI_REVIEW', 'TOPIC_KEYWORDS', fallback='接码,短信,验证码,SMS,号码')
+
+_ai_strict_mode_env = os.getenv('AI_REVIEW_STRICT_MODE')
+if _ai_strict_mode_env is not None:
+    AI_REVIEW_STRICT_MODE = _ai_strict_mode_env.lower() in ('true', '1', 'yes')
+else:
+    AI_REVIEW_STRICT_MODE = get_config_bool('AI_REVIEW', 'STRICT_MODE', False)
+
+_ai_auto_reject_env = os.getenv('AI_REVIEW_AUTO_REJECT')
+if _ai_auto_reject_env is not None:
+    AI_REVIEW_AUTO_REJECT = _ai_auto_reject_env.lower() in ('true', '1', 'yes')
+else:
+    AI_REVIEW_AUTO_REJECT = get_config_bool('AI_REVIEW', 'AUTO_REJECT', True)
+
+_ai_notify_user_env = os.getenv('AI_REVIEW_NOTIFY_USER')
+if _ai_notify_user_env is not None:
+    AI_REVIEW_NOTIFY_USER = _ai_notify_user_env.lower() in ('true', '1', 'yes')
+else:
+    AI_REVIEW_NOTIFY_USER = get_config_bool('AI_REVIEW', 'NOTIFY_USER', True)
+
+# 缓存配置
+_ai_cache_enabled_env = os.getenv('AI_REVIEW_CACHE_ENABLED')
+if _ai_cache_enabled_env is not None:
+    AI_REVIEW_CACHE_ENABLED = _ai_cache_enabled_env.lower() in ('true', '1', 'yes')
+else:
+    AI_REVIEW_CACHE_ENABLED = get_config_bool('AI_REVIEW', 'CACHE_ENABLED', True)
+
+_ai_cache_ttl = get_env_or_config('AI_REVIEW_CACHE_TTL_HOURS', 'AI_REVIEW', 'CACHE_TTL_HOURS')
+AI_REVIEW_CACHE_TTL_HOURS = int(_ai_cache_ttl) if _ai_cache_ttl else get_config_int('AI_REVIEW', 'CACHE_TTL_HOURS', 24)
+
+# 降级策略: manual/pass/reject
+AI_REVIEW_FALLBACK_ON_ERROR = get_env_or_config('AI_REVIEW_FALLBACK_ON_ERROR', 'AI_REVIEW', 'FALLBACK_ON_ERROR', fallback='manual')
+
+# 管理员通知
+_ai_notify_admin_reject_env = os.getenv('AI_REVIEW_NOTIFY_ADMIN_ON_REJECT')
+if _ai_notify_admin_reject_env is not None:
+    AI_REVIEW_NOTIFY_ADMIN_ON_REJECT = _ai_notify_admin_reject_env.lower() in ('true', '1', 'yes')
+else:
+    AI_REVIEW_NOTIFY_ADMIN_ON_REJECT = get_config_bool('AI_REVIEW', 'NOTIFY_ADMIN_ON_REJECT', True)
+
+_ai_notify_admin_dup_env = os.getenv('AI_REVIEW_NOTIFY_ADMIN_ON_DUPLICATE')
+if _ai_notify_admin_dup_env is not None:
+    AI_REVIEW_NOTIFY_ADMIN_ON_DUPLICATE = _ai_notify_admin_dup_env.lower() in ('true', '1', 'yes')
+else:
+    AI_REVIEW_NOTIFY_ADMIN_ON_DUPLICATE = get_config_bool('AI_REVIEW', 'NOTIFY_ADMIN_ON_DUPLICATE', True)
+
+# ============================================
+# 重复投稿检测配置
+# ============================================
+_dup_check_enabled_env = os.getenv('DUPLICATE_CHECK_ENABLED')
+if _dup_check_enabled_env is not None:
+    DUPLICATE_CHECK_ENABLED = _dup_check_enabled_env.lower() in ('true', '1', 'yes')
+else:
+    DUPLICATE_CHECK_ENABLED = get_config_bool('DUPLICATE_CHECK', 'ENABLED', False)
+
+_dup_window_days = get_env_or_config('DUPLICATE_CHECK_WINDOW_DAYS', 'DUPLICATE_CHECK', 'CHECK_WINDOW_DAYS')
+DUPLICATE_CHECK_WINDOW_DAYS = int(_dup_window_days) if _dup_window_days else get_config_int('DUPLICATE_CHECK', 'CHECK_WINDOW_DAYS', 7)
+
+_dup_threshold = get_env_or_config('DUPLICATE_SIMILARITY_THRESHOLD', 'DUPLICATE_CHECK', 'SIMILARITY_THRESHOLD')
+DUPLICATE_SIMILARITY_THRESHOLD = float(_dup_threshold) if _dup_threshold else 0.8
+
+# 检测维度开关
+_dup_check_user_id_env = os.getenv('DUPLICATE_CHECK_USER_ID')
+if _dup_check_user_id_env is not None:
+    DUPLICATE_CHECK_USER_ID = _dup_check_user_id_env.lower() in ('true', '1', 'yes')
+else:
+    DUPLICATE_CHECK_USER_ID = get_config_bool('DUPLICATE_CHECK', 'CHECK_USER_ID', True)
+
+_dup_check_urls_env = os.getenv('DUPLICATE_CHECK_URLS')
+if _dup_check_urls_env is not None:
+    DUPLICATE_CHECK_URLS = _dup_check_urls_env.lower() in ('true', '1', 'yes')
+else:
+    DUPLICATE_CHECK_URLS = get_config_bool('DUPLICATE_CHECK', 'CHECK_URLS', True)
+
+_dup_check_contacts_env = os.getenv('DUPLICATE_CHECK_CONTACTS')
+if _dup_check_contacts_env is not None:
+    DUPLICATE_CHECK_CONTACTS = _dup_check_contacts_env.lower() in ('true', '1', 'yes')
+else:
+    DUPLICATE_CHECK_CONTACTS = get_config_bool('DUPLICATE_CHECK', 'CHECK_CONTACTS', True)
+
+_dup_check_tg_links_env = os.getenv('DUPLICATE_CHECK_TG_LINKS')
+if _dup_check_tg_links_env is not None:
+    DUPLICATE_CHECK_TG_LINKS = _dup_check_tg_links_env.lower() in ('true', '1', 'yes')
+else:
+    DUPLICATE_CHECK_TG_LINKS = get_config_bool('DUPLICATE_CHECK', 'CHECK_TG_LINKS', True)
+
+_dup_check_user_bio_env = os.getenv('DUPLICATE_CHECK_USER_BIO')
+if _dup_check_user_bio_env is not None:
+    DUPLICATE_CHECK_USER_BIO = _dup_check_user_bio_env.lower() in ('true', '1', 'yes')
+else:
+    DUPLICATE_CHECK_USER_BIO = get_config_bool('DUPLICATE_CHECK', 'CHECK_USER_BIO', True)
+
+_dup_check_content_hash_env = os.getenv('DUPLICATE_CHECK_CONTENT_HASH')
+if _dup_check_content_hash_env is not None:
+    DUPLICATE_CHECK_CONTENT_HASH = _dup_check_content_hash_env.lower() in ('true', '1', 'yes')
+else:
+    DUPLICATE_CHECK_CONTENT_HASH = get_config_bool('DUPLICATE_CHECK', 'CHECK_CONTENT_HASH', True)
+
+# 处理方式
+_dup_auto_reject_env = os.getenv('DUPLICATE_AUTO_REJECT')
+if _dup_auto_reject_env is not None:
+    DUPLICATE_AUTO_REJECT = _dup_auto_reject_env.lower() in ('true', '1', 'yes')
+else:
+    DUPLICATE_AUTO_REJECT = get_config_bool('DUPLICATE_CHECK', 'AUTO_REJECT_DUPLICATE', True)
+
+_dup_notify_user_env = os.getenv('DUPLICATE_NOTIFY_USER')
+if _dup_notify_user_env is not None:
+    DUPLICATE_NOTIFY_USER = _dup_notify_user_env.lower() in ('true', '1', 'yes')
+else:
+    DUPLICATE_NOTIFY_USER = get_config_bool('DUPLICATE_CHECK', 'NOTIFY_USER_DUPLICATE', True)
+
+# 频率限制
+_rate_limit_enabled_env = os.getenv('RATE_LIMIT_ENABLED')
+if _rate_limit_enabled_env is not None:
+    RATE_LIMIT_ENABLED = _rate_limit_enabled_env.lower() in ('true', '1', 'yes')
+else:
+    RATE_LIMIT_ENABLED = get_config_bool('DUPLICATE_CHECK', 'RATE_LIMIT_ENABLED', True)
+
+_rate_limit_count = get_env_or_config('RATE_LIMIT_COUNT', 'DUPLICATE_CHECK', 'RATE_LIMIT_COUNT')
+RATE_LIMIT_COUNT = int(_rate_limit_count) if _rate_limit_count else get_config_int('DUPLICATE_CHECK', 'RATE_LIMIT_COUNT', 3)
+
+_rate_limit_window = get_env_or_config('RATE_LIMIT_WINDOW_HOURS', 'DUPLICATE_CHECK', 'RATE_LIMIT_WINDOW_HOURS')
+RATE_LIMIT_WINDOW_HOURS = int(_rate_limit_window) if _rate_limit_window else get_config_int('DUPLICATE_CHECK', 'RATE_LIMIT_WINDOW_HOURS', 24)
 
 # 打印配置信息（调试用）
 logger.info(f"配置加载完成:")
@@ -183,3 +343,12 @@ logger.info(f"  - SEARCH_ENABLED: {SEARCH_ENABLED}")
 logger.info(f"  - SEARCH_ANALYZER: {SEARCH_ANALYZER}")
 logger.info(f"  - SEARCH_HIGHLIGHT: {SEARCH_HIGHLIGHT}")
 logger.info(f"  - DB_CACHE_KB: {DB_CACHE_KB}")
+logger.info(f"  - TEXT_ONLY_MODE: {TEXT_ONLY_MODE}")
+logger.info(f"  - AI_REVIEW_ENABLED: {AI_REVIEW_ENABLED}")
+logger.info(f"  - DUPLICATE_CHECK_ENABLED: {DUPLICATE_CHECK_ENABLED}")
+if AI_REVIEW_ENABLED:
+    logger.info(f"  - AI_REVIEW_MODEL: {AI_REVIEW_MODEL}")
+    logger.info(f"  - AI_REVIEW_CHANNEL_TOPIC: {AI_REVIEW_CHANNEL_TOPIC}")
+if DUPLICATE_CHECK_ENABLED:
+    logger.info(f"  - DUPLICATE_CHECK_WINDOW_DAYS: {DUPLICATE_CHECK_WINDOW_DAYS}")
+    logger.info(f"  - RATE_LIMIT_ENABLED: {RATE_LIMIT_ENABLED}")

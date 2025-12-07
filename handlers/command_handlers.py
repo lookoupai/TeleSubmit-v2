@@ -154,20 +154,23 @@ async def help_command(update: Update, context: CallbackContext):
 
 
 async def handle_menu_shortcuts(update: Update, context: CallbackContext) -> None:
-    """处理底部菜单（ReplyKeyboard）文本，映射到实际命令。"""
+    """处理底部菜单（ReplyKeyboard）文本，映射到实际命令。
+
+    注意：投稿相关按钮（开始投稿）不在这里处理，由 ConversationHandler 的 entry_points 处理。
+    """
     # 排除频道消息
     if update.channel_post or update.edited_channel_post:
         return
-    
+
     # 检查是否是频道或群组
     if update.message and update.message.chat:
         chat_type = getattr(update.message.chat, 'type', None)
         if chat_type == 'channel':
             return
-    
+
     if not update.message:
         return
-    
+
     text = (update.message.text or "").strip()
     try:
         # 如果处于搜索输入模式，优先交给搜索输入处理
@@ -175,10 +178,10 @@ async def handle_menu_shortcuts(update: Update, context: CallbackContext) -> Non
             from handlers.search_handlers import handle_search_input
             await handle_search_input(update, context)
             return
-        # 开始投稿
+        # 开始投稿 - 不在这里处理，让消息继续传递给 ConversationHandler
+        # 这个快捷方式由 main.py 中的 MessageHandler 处理
         if text.endswith("开始投稿"):
-            from handlers.mode_selection import submit
-            await submit(update, context)
+            # 不处理，让消息继续传递
             return
         # 我的统计
         if text.endswith("我的统计"):

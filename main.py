@@ -26,9 +26,9 @@ from dotenv import load_dotenv
 
 # 配置相关导入
 from config.settings import (
-    TOKEN, TIMEOUT, BOT_MODE, MODE_MEDIA, MODE_DOCUMENT, MODE_MIXED,
+    TOKEN, TIMEOUT, BOT_MODE, MODE_MEDIA, MODE_DOCUMENT, MODE_MIXED, MODE_TEXT, MODE_ALL,
     RUN_MODE, WEBHOOK_URL, WEBHOOK_PORT, WEBHOOK_PATH, WEBHOOK_SECRET_TOKEN,
-    CHANNEL_ID
+    CHANNEL_ID, AI_REVIEW_ENABLED, DUPLICATE_CHECK_ENABLED
 )
 from models.state import STATE
 
@@ -74,6 +74,12 @@ from handlers.submit_handlers import (
     skip_optional_title,
     skip_optional_note
 )
+
+# 纯文本投稿处理
+from handlers.text_handlers import handle_text_content
+
+# 审核流程处理
+from handlers.review_handlers import handle_review_callback
 
 # 错误处理
 from handlers.error_handler import error_handler
@@ -121,6 +127,9 @@ except ImportError:
 
 # 全局变量
 TIMEOUT_SECONDS = int(os.getenv("SESSION_TIMEOUT", "900"))  # 默认15分钟
+
+# 全局关闭事件，用于优雅退出
+_shutdown_event: asyncio.Event = None
 
 # 黑名单过滤函数包装器
 def check_blacklist(handler_func):
@@ -403,57 +412,71 @@ async def main():
         await application.updater.start_polling(allowed_updates=allowed_updates)
         logger.info("✅ Polling 模式已启动")
     
+    # 创建关闭事件
+    global _shutdown_event
+    _shutdown_event = asyncio.Event()
+
     # 添加事件处理器以便优雅关闭
     loop = asyncio.get_running_loop()
     stop_signals = (signal.SIGINT, signal.SIGTERM, signal.SIGABRT)
     for s in stop_signals:
         loop.add_signal_handler(
-            s, lambda s=s: asyncio.create_task(shutdown(application, s, loop, webhook_server))
+            s, lambda s=s: asyncio.create_task(shutdown(application, s, webhook_server))
         )
-        
+
     logger.info("机器人运行中，使用 Ctrl+C 停止")
-    
-    # 保持应用程序运行
-    await asyncio.Event().wait()
-    
+
+    # 等待关闭事件
+    await _shutdown_event.wait()
+
     logger.info("机器人已停止")
 
 
-async def shutdown(application, signal, loop, webhook_server=None):
+async def shutdown(application, sig, webhook_server=None):
     """
     优雅地关闭机器人
-    
+
     Args:
         application: telegram.ext.Application 实例
-        signal: 信号类型
-        loop: 事件循环
-        webhook_server: Webhook 服务器实例（可选，预留参数）
+        sig: 信号类型
+        webhook_server: Webhook 服务器实例（可选）
     """
-    logger.info(f"收到信号 {signal.name}，正在关闭...")
-    
-    # 如果是 Webhook 模式，停止 webhook 服务器并删除 webhook
-    if webhook_server:
-        try:
-            logger.info("正在停止 Webhook 服务器...")
-            await webhook_server.stop()
-            logger.info("Webhook 服务器已停止")
-        except Exception as e:
-            logger.warning(f"停止 Webhook 服务器失败: {e}")
-        
-        try:
-            logger.info("正在删除 Telegram Webhook...")
-            await application.bot.delete_webhook(drop_pending_updates=False)
-            logger.info("Telegram Webhook 已删除")
-        except Exception as e:
-            logger.warning(f"删除 Webhook 失败: {e}")
-    
-    # 关闭机器人更新器
-    await application.updater.stop()
-    await application.stop()
-    await application.shutdown()
-    
-    # 结束事件循环
-    loop.stop()
+    global _shutdown_event
+
+    logger.info(f"收到信号 {sig.name}，正在关闭...")
+
+    try:
+        # 如果是 Webhook 模式，停止 webhook 服务器并删除 webhook
+        if webhook_server:
+            try:
+                logger.info("正在停止 Webhook 服务器...")
+                await webhook_server.stop()
+                logger.info("Webhook 服务器已停止")
+            except Exception as e:
+                logger.warning(f"停止 Webhook 服务器失败: {e}")
+
+            try:
+                logger.info("正在删除 Telegram Webhook...")
+                await application.bot.delete_webhook(drop_pending_updates=False)
+                logger.info("Telegram Webhook 已删除")
+            except Exception as e:
+                logger.warning(f"删除 Webhook 失败: {e}")
+
+        # 关闭机器人更新器
+        if application.updater.running:
+            await application.updater.stop()
+        await application.stop()
+        await application.shutdown()
+
+        logger.info("应用程序关闭完成")
+
+    except Exception as e:
+        logger.error(f"关闭过程中发生错误: {e}")
+
+    finally:
+        # 触发关闭事件，让 main() 函数正常退出
+        if _shutdown_event:
+            _shutdown_event.set()
 
 
 def setup_application(application):
@@ -532,7 +555,9 @@ def setup_application(application):
         logger.info("注册会话处理器...")
         conv_handler = ConversationHandler(
             entry_points=[
-                CommandHandler("submit", submit)
+                CommandHandler("submit", submit),
+                # 添加底部菜单按钮"开始投稿"作为 entry_point
+                MessageHandler(filters.Regex(r".*开始投稿$"), submit)
             ],
             states={
                 # 模式选择状态
@@ -585,7 +610,10 @@ def setup_application(application):
                     CommandHandler('skip_optional', skip_optional_note),
                     MessageHandler(filters.TEXT & ~filters.COMMAND, handle_note)
                 ],
-                STATE.get('SPOILER', 8): [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_spoiler)]
+                STATE.get('SPOILER', 8): [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_spoiler)],
+
+                # 纯文本投稿状态
+                STATE.get('TEXT_CONTENT', 14): [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_content)]
             },
             fallbacks=[CommandHandler("cancel", cancel)],
             name="submission_conversation",
@@ -599,6 +627,8 @@ def setup_application(application):
     
     # 添加回调查询处理器（统一处理所有回调）
     from handlers.callback_handlers import handle_callback_query
+    # 添加审核回调处理器（在通用处理器之前，以便优先匹配）
+    application.add_handler(CallbackQueryHandler(handle_review_callback, pattern="^review_"), group=3)
     application.add_handler(CallbackQueryHandler(handle_callback_query), group=3)
     
     # 添加周期性清理任务

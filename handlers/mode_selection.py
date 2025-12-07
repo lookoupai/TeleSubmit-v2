@@ -6,12 +6,16 @@ from datetime import datetime
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
 from telegram.ext import ConversationHandler, CallbackContext
 
-from config.settings import BOT_MODE, MODE_MEDIA, MODE_DOCUMENT, MODE_MIXED, ALLOWED_FILE_TYPES
+from config.settings import (
+    BOT_MODE, MODE_MEDIA, MODE_DOCUMENT, MODE_MIXED, MODE_TEXT, MODE_ALL,
+    ALLOWED_FILE_TYPES, TEXT_ONLY_MODE, DEFAULT_SUBMIT_MODE
+)
 from utils.file_validator import create_file_validator
 from models.state import STATE
 from database.db_manager import get_db, cleanup_old_data
 from utils.blacklist import is_blacklisted
 from ui.keyboards import Keyboards
+from handlers.text_handlers import show_text_welcome
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +49,22 @@ async def submit(update: Update, context: CallbackContext) -> int:
             c = await conn.cursor()
             # 清除旧会话记录
             await c.execute("DELETE FROM submissions WHERE user_id=?", (user_id,))
-            
+
             # 根据配置决定模式
-            if BOT_MODE == MODE_MEDIA:
+            if BOT_MODE == MODE_TEXT:
+                # 仅纯文本模式
+                mode = "text"
+                logger.info(f"使用纯文本模式，user_id: {user_id}")
+                await c.execute(
+                    "INSERT INTO submissions (user_id, timestamp, mode, image_id, document_id, username) VALUES (?, ?, ?, ?, ?, ?)",
+                    (user_id, datetime.now().timestamp(), mode, "[]", "[]", username)
+                )
+                await conn.commit()
+                await show_text_welcome(update)
+                logger.info(f"已发送纯文本欢迎信息，切换到TEXT_CONTENT状态，user_id: {user_id}")
+                return STATE['TEXT_CONTENT']
+
+            elif BOT_MODE == MODE_MEDIA:
                 mode = "media"
                 logger.info(f"使用媒体模式，user_id: {user_id}")
                 await c.execute("INSERT INTO submissions (user_id, timestamp, mode, image_id, document_id, username) VALUES (?, ?, ?, ?, ?, ?)",
@@ -56,7 +73,7 @@ async def submit(update: Update, context: CallbackContext) -> int:
                 await show_media_welcome(update)
                 logger.info(f"已发送媒体欢迎信息，切换到MEDIA状态，user_id: {user_id}")
                 return STATE['MEDIA']
-                
+
             elif BOT_MODE == MODE_DOCUMENT:
                 mode = "document"
                 logger.info(f"使用文档模式，user_id: {user_id}")
@@ -66,21 +83,51 @@ async def submit(update: Update, context: CallbackContext) -> int:
                 await show_document_welcome(update)
                 logger.info(f"已发送文档欢迎信息，切换到DOC状态，user_id: {user_id}")
                 return STATE['DOC']
-                
-            else:  # 混合模式
+
+            elif BOT_MODE == MODE_ALL:
+                # 全部模式：文本+媒体+文档
+                logger.info(f"使用全部模式（ALL），user_id: {user_id}")
+                await c.execute(
+                    "INSERT INTO submissions (user_id, timestamp, mode, image_id, document_id, username) VALUES (?, ?, ?, ?, ?, ?)",
+                    (user_id, datetime.now().timestamp(), "all", "[]", "[]", username)
+                )
+                await conn.commit()
+
+                # 显示三选一键盘
+                text_button = '📝 纯文本'
+                media_button = '🖼 媒体投稿'
+                doc_button = '📁 文档投稿'
+                keyboard = [[KeyboardButton(text_button), KeyboardButton(media_button), KeyboardButton(doc_button)]]
+                markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+
+                await update.message.reply_text(
+                    "📮 欢迎使用投稿机器人！请选择投稿类型：\n\n"
+                    "- 📝 纯文本：直接发送文字内容投稿\n"
+                    "  适用场景：发布文字公告、信息分享等\n\n"
+                    "- 🖼 媒体投稿：用于提交图片、视频、GIF等媒体文件\n"
+                    "  适用场景：直接通过Telegram选择相册中的图片/视频发送\n\n"
+                    "- 📁 文档投稿：用于提交压缩包、PDF、DOC等文档文件\n"
+                    "  适用场景：通过文件附件方式发送各类资源文件\n\n"
+                    "⏱️ 操作超时提醒：如果5分钟内没有操作，会话将自动结束。",
+                    reply_markup=markup
+                )
+                logger.info(f"已发送全部模式选择提示，切换到START_MODE状态，user_id: {user_id}")
+                return STATE['START_MODE']
+
+            else:  # 混合模式 (MIXED)
                 # 先创建数据库记录
                 logger.info(f"使用混合模式，user_id: {user_id}")
                 await c.execute("INSERT INTO submissions (user_id, timestamp, mode, image_id, document_id, username) VALUES (?, ?, ?, ?, ?, ?)",
                           (user_id, datetime.now().timestamp(), "mixed", "[]", "[]", username))
                 await conn.commit()
-                
+
                 # 显示模式选择键盘
                 media_button = '📷 媒体投稿'
                 doc_button = '📄 文档投稿'
                 keyboard = [[KeyboardButton(media_button), KeyboardButton(doc_button)]]
                 markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
                 logger.info(f"创建选择键盘，按钮: '{media_button}', '{doc_button}'")
-                
+
                 await update.message.reply_text(
                     "📮 欢迎使用投稿机器人！请选择投稿类型：\n\n"
                     "- 📷 媒体投稿：用于提交图片、视频、GIF等媒体文件\n"
@@ -163,51 +210,69 @@ async def start(update: Update, context: CallbackContext) -> int:
 async def select_mode(update: Update, context: CallbackContext) -> int:
     """
     处理用户模式选择
-    
+
     Args:
         update: Telegram 更新对象
         context: 回调上下文
-        
+
     Returns:
         int: 下一个会话状态
     """
     user_id = update.effective_user.id
     text = update.message.text
-    
+
     # 增加调试日志
     logger.info(f"处理模式选择，用户输入: '{text}'，user_id: {user_id}")
-    
+
     try:
         async with get_db() as conn:
             c = await conn.cursor()
-            
+
             # 使用更灵活的匹配方式
-            if "媒体" in text or "📷" in text:
+            if "纯文本" in text or "📝" in text:
+                # 选择纯文本投稿模式
+                logger.info(f"用户选择纯文本模式，user_id: {user_id}")
+                await c.execute("UPDATE submissions SET mode=?, image_id=?, document_id=? WHERE user_id=?",
+                                ("text", "[]", "[]", user_id))
+                await conn.commit()
+                await update.message.reply_text("✅ 已选择纯文本投稿模式", reply_markup=ReplyKeyboardRemove())
+                await show_text_welcome(update)
+                return STATE['TEXT_CONTENT']
+
+            elif "媒体" in text or "📷" in text or "🖼" in text:
                 # 选择媒体投稿模式
                 logger.info(f"用户选择媒体模式，user_id: {user_id}")
-                await c.execute("UPDATE submissions SET mode=?, image_id=?, document_id=? WHERE user_id=?", 
+                await c.execute("UPDATE submissions SET mode=?, image_id=?, document_id=? WHERE user_id=?",
                                 ("media", "[]", "[]", user_id))
                 await conn.commit()
                 await update.message.reply_text("✅ 已选择媒体投稿模式", reply_markup=ReplyKeyboardRemove())
                 await show_media_welcome(update)
                 return STATE['MEDIA']
-                
-            elif "文档" in text or "📄" in text:
+
+            elif "文档" in text or "📄" in text or "📁" in text:
                 # 选择文档投稿模式
                 logger.info(f"用户选择文档模式，user_id: {user_id}")
-                await c.execute("UPDATE submissions SET mode=?, image_id=?, document_id=? WHERE user_id=?", 
+                await c.execute("UPDATE submissions SET mode=?, image_id=?, document_id=? WHERE user_id=?",
                                 ("document", "[]", "[]", user_id))
                 await conn.commit()
                 await update.message.reply_text("✅ 已选择文档投稿模式", reply_markup=ReplyKeyboardRemove())
                 await show_document_welcome(update)
                 return STATE['DOC']
-                
+
             else:
-                # 无效选择
+                # 无效选择，根据当前模式显示不同键盘
                 logger.warning(f"无效的模式选择: '{text}'，user_id: {user_id}")
-                media_button = '📷 媒体投稿'
-                doc_button = '📄 文档投稿'
-                keyboard = [[KeyboardButton(media_button), KeyboardButton(doc_button)]]
+
+                if BOT_MODE == MODE_ALL:
+                    text_button = '📝 纯文本'
+                    media_button = '🖼 媒体投稿'
+                    doc_button = '📁 文档投稿'
+                    keyboard = [[KeyboardButton(text_button), KeyboardButton(media_button), KeyboardButton(doc_button)]]
+                else:
+                    media_button = '📷 媒体投稿'
+                    doc_button = '📄 文档投稿'
+                    keyboard = [[KeyboardButton(media_button), KeyboardButton(doc_button)]]
+
                 markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
                 await update.message.reply_text(
                     "⚠️ 请选择有效的投稿类型：",

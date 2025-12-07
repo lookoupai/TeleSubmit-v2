@@ -27,8 +27,20 @@ SHOW_SUBMITTER = true
 # 是否向所有者发送新投稿通知 (true/false)
 NOTIFY_OWNER = true
 
-# 机器人模式: MEDIA (仅媒体), DOCUMENT (仅文档), MIXED (混合模式)
-BOT_MODE = MIXED
+# 机器人模式: MEDIA (仅媒体), DOCUMENT (仅文档), MIXED (混合模式), TEXT (仅文本), ALL (全部模式)
+# TEXT: 仅允许纯文本投稿
+# ALL: 用户可选择纯文本、媒体或文档投稿
+BOT_MODE = ALL
+
+# 是否允许纯文本投稿（默认 true）
+TEXT_ONLY_MODE = true
+
+# 默认投稿模式：TEXT/MEDIA/DOCUMENT（仅在 BOT_MODE = ALL 时作为默认值）
+DEFAULT_SUBMIT_MODE = TEXT
+
+# 纯文本投稿字数限制
+MIN_TEXT_LENGTH = 10
+MAX_TEXT_LENGTH = 4000
 
 # 允许的文档类型（扩展名或MIME，逗号分隔），留空或 * 表示允许所有
 ALLOWED_FILE_TYPES = *
@@ -43,7 +55,7 @@ RUN_MODE = POLLING
 
 # 外部访问地址（必填，例如: https://your-app.fly.dev）
 # 注意：必须是 HTTPS 且有效的域名
-URL = 
+URL =
 
 # Webhook 监听端口（默认 8080）
 PORT = 8080
@@ -53,7 +65,7 @@ PATH = /webhook
 
 # Webhook Secret Token（可选，用于验证请求来源）
 # 留空则自动生成随机 token
-SECRET_TOKEN = 
+SECRET_TOKEN =
 
 [SEARCH]
 # 搜索索引目录
@@ -74,3 +86,81 @@ HIGHLIGHT = false
 # SQLite page cache 大小（KB），影响内存占用
 # 内存受限可设 1024（1MB），通常 1024~4096 即可
 CACHE_SIZE_KB = 1024
+
+[AI_REVIEW]
+# AI 内容审核配置（使用 OpenAI 兼容 API）
+
+# 是否启用 AI 审核
+ENABLED = false
+
+# OpenAI 兼容 API 地址（支持 OpenAI、Azure、本地部署等）
+API_BASE_URL = https://api.openai.com/v1
+
+# API 密钥
+API_KEY = sk-xxx
+
+# 使用的模型（推荐 gpt-4o-mini 性价比高）
+MODEL = gpt-4o-mini
+
+# API 超时时间（秒）
+TIMEOUT = 30
+
+# 最大重试次数
+MAX_RETRIES = 2
+
+# 频道主题描述（用于 AI 判断内容是否相关）
+CHANNEL_TOPIC = 接码服务
+
+# 主题关键词（逗号分隔，帮助 AI 更准确判断）
+TOPIC_KEYWORDS = 接码,短信,验证码,SMS,号码,虚拟号,临时号
+
+# 严格模式（true=内容必须高度相关才能通过）
+STRICT_MODE = false
+
+# 不相关内容自动拒绝
+AUTO_REJECT = true
+
+# 是否通知用户审核结果
+NOTIFY_USER = true
+
+# 审核结果缓存（相同内容不重复调用 API）
+CACHE_ENABLED = true
+CACHE_TTL_HOURS = 24
+
+# API 失败时的降级策略: manual（转人工）| pass（直接通过）| reject（直接拒绝）
+FALLBACK_ON_ERROR = manual
+
+# 管理员通知
+NOTIFY_ADMIN_ON_REJECT = true
+NOTIFY_ADMIN_ON_DUPLICATE = true
+
+[DUPLICATE_CHECK]
+# 重复投稿检测配置
+
+# 是否启用重复检测
+ENABLED = false
+
+# 检测时间窗口（天）- 在此时间内的投稿会被检查
+CHECK_WINDOW_DAYS = 7
+
+# 相似度阈值（0-1）- 超过此阈值认为是重复内容
+SIMILARITY_THRESHOLD = 0.8
+
+# 检测维度开关
+CHECK_USER_ID = true
+CHECK_URLS = true
+CHECK_CONTACTS = true
+CHECK_TG_LINKS = true
+CHECK_USER_BIO = true
+CHECK_CONTENT_HASH = true
+
+# 自动拒绝重复投稿
+AUTO_REJECT_DUPLICATE = true
+
+# 通知用户重复原因
+NOTIFY_USER_DUPLICATE = true
+
+# 投稿频率限制
+RATE_LIMIT_ENABLED = true
+RATE_LIMIT_COUNT = 3
+RATE_LIMIT_WINDOW_HOURS = 24

@@ -336,9 +336,95 @@ class MessageFormatter:
             "session": "❌ 未找到投稿会话，请使用 /submit 开始",
             "invalid_format": "❌ 格式错误，请检查输入",
             "not_found": "❌ 未找到相关内容",
-            "rate_limit": "⏰ 操作过于频繁，请稍后再试"
+            "rate_limit": "⏰ 操作过于频繁，请稍后再试",
+            "duplicate": "⚠️ 检测到重复投稿，请勿重复提交",
+            "review_rejected": "❌ 投稿未通过审核",
+            "review_pending": "📋 投稿正在审核中，请耐心等待"
         }
         return errors.get(error_type, errors["general"])
+
+    @staticmethod
+    def review_approved() -> str:
+        """审核通过消息"""
+        return """
+✅ <b>投稿审核通过！</b>
+
+您的投稿已发布到频道。
+感谢您的投稿！
+"""
+
+    @staticmethod
+    def review_rejected(reason: str = "", topic: str = "接码服务") -> str:
+        """审核拒绝消息"""
+        return f"""
+❌ <b>投稿未通过审核</b>
+
+原因：{reason if reason else '内容与频道主题不符'}
+
+本频道仅接受与「{topic}」相关的内容投稿。
+如有疑问，请联系管理员。
+"""
+
+    @staticmethod
+    def review_pending() -> str:
+        """等待审核消息"""
+        return """
+📋 <b>投稿已提交审核</b>
+
+您的投稿正在等待管理员审核。
+审核结果将通过机器人通知您，请耐心等待。
+"""
+
+    @staticmethod
+    def duplicate_detected(message: str = "") -> str:
+        """重复投稿检测消息"""
+        return f"""
+⚠️ <b>检测到重复投稿</b>
+
+{message if message else '您的投稿与近期历史投稿存在重复特征。'}
+
+为保证频道内容质量，7 天内相同内容不可重复投稿。
+如有疑问，请联系管理员。
+"""
+
+    @staticmethod
+    def rate_limit_exceeded(count: int, window_hours: int) -> str:
+        """频率限制消息"""
+        return f"""
+⚠️ <b>投稿频率超限</b>
+
+您在 {window_hours} 小时内已投稿 {count} 次，已达到上限。
+请稍后再试，或联系管理员。
+"""
+
+    @staticmethod
+    def admin_review_notification(
+        username: str,
+        user_id: int,
+        content_preview: str,
+        tags: str,
+        confidence: float,
+        category: str,
+        reason: str
+    ) -> str:
+        """管理员审核通知"""
+        from datetime import datetime
+        return f"""
+🔔 <b>新投稿待审核</b>
+
+<b>投稿人：</b>@{username} (ID: {user_id})
+<b>投稿时间：</b>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+<b>内容：</b>
+{content_preview}
+
+<b>标签：</b>{tags if tags else '无'}
+
+<b>AI 审核结果：</b>
+• 置信度：{confidence:.0%}
+• 分类：{category}
+• 原因：{reason}
+"""
     
     @staticmethod
     def success_message(action: str = "操作") -> str:

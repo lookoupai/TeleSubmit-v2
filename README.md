@@ -13,7 +13,9 @@
 
 ## 核心功能
 
-- **投稿管理** - 支持图片、视频、文档批量上传，支持多种媒体格式
+- **投稿管理** - 支持图片、视频、文档批量上传，**新增纯文本投稿模式**
+- **AI 智能审核** - 基于 OpenAI 兼容 API 自动审核内容相关性，支持自动通过/拒绝/人工审核
+- **重复投稿检测** - 多维特征识别（URL、TG链接、联系方式等），防止 7 天内重复投稿
 - **频道监听** - 自动监听频道消息，智能提取标签和内容，自动同步到数据库和搜索索引
 - **全文搜索** - 基于 Whoosh 搜索引擎，中文分词优化（jieba/simple），支持标题/标签/文件名多字段搜索
 - **热度统计** - 智能热度算法，自动生成排行榜，支持按时间范围筛选
@@ -109,6 +111,39 @@ PATH = /webhook
 
 </details>
 
+<details>
+<summary>AI 审核配置（可选）</summary>
+
+```ini
+[AI_REVIEW]
+ENABLED = true                              # 启用 AI 审核
+API_BASE_URL = https://api.openai.com/v1    # OpenAI 兼容 API
+API_KEY = sk-xxx                            # API 密钥
+MODEL = gpt-4o-mini                         # 模型名称
+CHANNEL_TOPIC = 你的频道主题                 # 频道主题描述
+TOPIC_KEYWORDS = 关键词1,关键词2             # 主题关键词
+AUTO_REJECT = true                          # 自动拒绝不相关内容
+```
+
+支持 OpenAI、Azure、Claude（兼容层）、本地 LLM 等。
+
+</details>
+
+<details>
+<summary>重复投稿检测配置（可选）</summary>
+
+```ini
+[DUPLICATE_CHECK]
+ENABLED = true                      # 启用重复检测
+CHECK_WINDOW_DAYS = 7               # 检测时间窗口（天）
+SIMILARITY_THRESHOLD = 0.8          # 相似度阈值
+AUTO_REJECT_DUPLICATE = true        # 自动拒绝重复投稿
+RATE_LIMIT_ENABLED = true           # 启用频率限制
+RATE_LIMIT_COUNT = 3                # 24小时内最大投稿次数
+```
+
+</details>
+
 ---
 
 ## 常用命令
@@ -149,6 +184,22 @@ PATH = /webhook
 ---
 
 ## 投稿流程
+
+### 纯文本投稿（默认）
+
+```
+1. 发送 /submit
+   ↓
+2. 直接输入投稿内容
+   ↓
+3. 输入标签（必填）
+   ↓
+4. 输入链接（可选，/skip_optional 跳过）
+   ↓
+5. AI 自动审核 → 发布到频道 ✅
+```
+
+### 媒体/文档投稿
 
 ```
 1. 发送 /submit
@@ -259,6 +310,9 @@ ANALYZER = simple  # 轻量级，节省 ~140MB 内存
 | [脚本指南](SCRIPTS_GUIDE.md) | 所有管理脚本详细说明 |
 | [部署指南](DEPLOYMENT.md) | 详细部署步骤、故障排查 |
 | [Webhook 模式](docs/WEBHOOK_MODE.md) | Webhook 完整配置指南 |
+| [Fly.io 部署](docs/FLYIO_DEPLOYMENT.md) | Fly.io 云平台部署指南 |
+| [PythonAnywhere 部署](docs/PYTHONANYWHERE_DEPLOYMENT.md) | PythonAnywhere 部署指南 |
+| [AI 审核设计](docs/TEXT_MODE_AI_REVIEW_DESIGN.md) | AI 审核与重复检测技术文档 |
 | [管理员指南](ADMIN_GUIDE.md) | 管理功能、系统维护 |
 | [内存优化](MEMORY_USAGE.md) | 内存使用分析与优化 |
 | [测试指南](TESTING.md) | 测试框架、编写和运行测试 |
@@ -368,6 +422,7 @@ TeleSubmit-v2/
 
 - **语言**: Python 3.9+
 - **框架**: python-telegram-bot 21.10+
+- **AI 审核**: OpenAI SDK 1.0+ (兼容第三方 API)
 - **搜索引擎**: Whoosh 2.7.4+
 - **中文分词**: jieba 0.42.1+ (可选)
 - **数据库**: SQLite (通过 aiosqlite)

@@ -172,77 +172,77 @@ async def handle_spoiler(update: Update, context: CallbackContext) -> int:
 @validate_state(STATE['LINK'])
 async def skip_optional_link(update: Update, context: CallbackContext) -> int:
     """
-    跳过链接及后续可选项
-    
+    跳过链接及后续所有可选项（包括剧透设置）
+
     Args:
         update: Telegram 更新对象
         context: 回调上下文
-        
+
     Returns:
         int: 下一个会话状态
     """
-    logger.info(f"跳过链接、标题、简介，user_id: {update.effective_user.id}")
+    logger.info(f"跳过链接、标题、简介、剧透，user_id: {update.effective_user.id}")
     user_id = update.effective_user.id
     try:
         async with get_db() as conn:
             c = await conn.cursor()
-            await c.execute("UPDATE submissions SET link=?, title=?, note=?, timestamp=? WHERE user_id=?",
-                      ("", "", "", datetime.now().timestamp(), user_id))
+            await c.execute("UPDATE submissions SET link=?, title=?, note=?, spoiler=?, timestamp=? WHERE user_id=?",
+                      ("", "", "", "false", datetime.now().timestamp(), user_id))
     except Exception as e:
         logger.error(f"/skip_optional 执行错误: {e}")
         await update.message.reply_text("❌ 跳过可选项失败，请稍后再试")
         return ConversationHandler.END
-    await update.message.reply_text("✅ 链接、标题、简介已跳过，请问是否将内容设为剧透（点击查看）？回复 \"否\" 或 \"是\"")
-    return STATE['SPOILER']
+    await update.message.reply_text("✅ 已跳过所有可选项，正在发布投稿……")
+    return await publish_submission(update, context)
 
 @validate_state(STATE['TITLE'])
 async def skip_optional_title(update: Update, context: CallbackContext) -> int:
     """
-    跳过标题及后续可选项
-    
+    跳过标题及后续所有可选项（包括剧透设置）
+
     Args:
         update: Telegram 更新对象
         context: 回调上下文
-        
+
     Returns:
         int: 下一个会话状态
     """
-    logger.info(f"跳过标题、简介，user_id: {update.effective_user.id}")
+    logger.info(f"跳过标题、简介、剧透，user_id: {update.effective_user.id}")
     user_id = update.effective_user.id
     try:
         async with get_db() as conn:
             c = await conn.cursor()
-            await c.execute("UPDATE submissions SET title=?, note=?, timestamp=? WHERE user_id=?",
-                      ("", "", datetime.now().timestamp(), user_id))
+            await c.execute("UPDATE submissions SET title=?, note=?, spoiler=?, timestamp=? WHERE user_id=?",
+                      ("", "", "false", datetime.now().timestamp(), user_id))
     except Exception as e:
         logger.error(f"/skip_optional 执行错误: {e}")
         await update.message.reply_text("❌ 跳过可选项失败，请稍后再试")
         return ConversationHandler.END
-    await update.message.reply_text("✅ 标题、简介已跳过，请问是否将内容设为剧透（点击查看）？回复 \"否\" 或 \"是\"")
-    return STATE['SPOILER']
+    await update.message.reply_text("✅ 已跳过所有可选项，正在发布投稿……")
+    return await publish_submission(update, context)
 
 @validate_state(STATE['NOTE'])
 async def skip_optional_note(update: Update, context: CallbackContext) -> int:
     """
-    跳过简介
-    
+    跳过简介及剧透设置
+
     Args:
         update: Telegram 更新对象
         context: 回调上下文
-        
+
     Returns:
         int: 下一个会话状态
     """
-    logger.info(f"跳过简介，user_id: {update.effective_user.id}")
+    logger.info(f"跳过简介、剧透，user_id: {update.effective_user.id}")
     user_id = update.effective_user.id
     try:
         async with get_db() as conn:
             c = await conn.cursor()
-            await c.execute("UPDATE submissions SET note=?, timestamp=? WHERE user_id=?",
-                      ("", datetime.now().timestamp(), user_id))
+            await c.execute("UPDATE submissions SET note=?, spoiler=?, timestamp=? WHERE user_id=?",
+                      ("", "false", datetime.now().timestamp(), user_id))
     except Exception as e:
         logger.error(f"/skip_optional 执行错误: {e}")
         await update.message.reply_text("❌ 跳过可选项失败，请稍后再试")
         return ConversationHandler.END
-    await update.message.reply_text("✅ 简介已跳过，请问是否将内容设为剧透（点击查看）？回复 \"否\" 或 \"是\"")
-    return STATE['SPOILER']
+    await update.message.reply_text("✅ 已跳过所有可选项，正在发布投稿……")
+    return await publish_submission(update, context)

@@ -15,17 +15,18 @@ from telegram import (
 )
 from telegram.ext import ConversationHandler, CallbackContext
 
-from config.settings import CHANNEL_ID, NET_TIMEOUT, OWNER_ID, NOTIFY_OWNER
+from config.settings import CHANNEL_ID, NET_TIMEOUT, OWNER_ID, NOTIFY_OWNER, DUPLICATE_CHECK_ENABLED, AI_REVIEW_ENABLED
 from database.db_manager import get_db, cleanup_old_data
 from utils.helper_functions import build_caption, safe_send
 from utils.search_engine import get_search_engine, PostDocument
+from handlers.review_handlers import perform_review, save_fingerprint_after_publish
 
 logger = logging.getLogger(__name__)
 
-async def save_published_post(user_id, message_id, data, media_list, doc_list, all_message_ids=None):
+async def save_published_post(user_id, message_id, data, media_list, doc_list, all_message_ids=None, text_content=None):
     """
     保存已发布的帖子信息到数据库和搜索索引
-    
+
     Args:
         user_id: 用户ID
         message_id: 频道主消息ID
@@ -33,15 +34,21 @@ async def save_published_post(user_id, message_id, data, media_list, doc_list, a
         media_list: 媒体列表
         doc_list: 文档列表
         all_message_ids: 所有相关消息ID列表（用于多组媒体的热度统计）
+        text_content: 纯文本投稿内容
     """
     try:
         # 确定内容类型
-        content_type = 'media' if media_list else 'document'
-        if media_list and doc_list:
+        if text_content and not media_list and not doc_list:
+            content_type = 'text'
+        elif media_list and doc_list:
             content_type = 'mixed'
-        
+        elif media_list:
+            content_type = 'media'
+        else:
+            content_type = 'document'
+
         # 获取文件ID列表
-        file_ids = json.dumps(media_list if media_list else doc_list)
+        file_ids = json.dumps(media_list if media_list else (doc_list if doc_list else []))
         
         # 提取标签（从tags字段）- 兼容 sqlite3.Row 对象
         tags = data['tags'] if 'tags' in data.keys() else ''
@@ -84,10 +91,10 @@ async def save_published_post(user_id, message_id, data, media_list, doc_list, a
         async with get_db() as conn:
             cursor = await conn.cursor()
             await cursor.execute("""
-                INSERT INTO published_posts 
+                INSERT INTO published_posts
                 (message_id, user_id, username, title, tags, link, note,
-                 content_type, file_ids, caption, filename, publish_time, last_update, related_message_ids)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 content_type, file_ids, caption, filename, publish_time, last_update, related_message_ids, text_content)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 message_id,
                 user_id,
@@ -102,11 +109,12 @@ async def save_published_post(user_id, message_id, data, media_list, doc_list, a
                 filename,
                 publish_time.timestamp(),
                 publish_time.timestamp(),
-                related_ids_json
+                related_ids_json,
+                text_content
             ))
             post_id = cursor.lastrowid  # 获取插入的行ID
             await conn.commit()
-            logger.info(f"已保存帖子 {message_id} (post_id: {post_id}) 到published_posts表（文件名: {filename}）")
+            logger.info(f"已保存帖子 {message_id} (post_id: {post_id}) 到published_posts表（内容类型: {content_type}）")
         
         # 添加到搜索索引
         try:
@@ -188,18 +196,74 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
             logger.warning(f"解析文档数据失败，user_id: {user_id}")
             doc_list = []
         
-        if not media_list and not doc_list:
-            await update.message.reply_text("❌ 未检测到任何上传文件，请重新发送 /start")
+        # 获取纯文本内容
+        text_content = data["text_content"] if "text_content" in data.keys() and data["text_content"] else None
+
+        if not media_list and not doc_list and not text_content:
+            await update.message.reply_text("❌ 未检测到任何上传文件或文本内容，请重新发送 /start")
             return ConversationHandler.END
+
+        # === 审核流程：重复检测和 AI 审核 ===
+        if DUPLICATE_CHECK_ENABLED or AI_REVIEW_ENABLED:
+            # 构建投稿数据用于审核
+            submission_data = {
+                'text_content': text_content,
+                'title': data['title'] if data['title'] else '',
+                'note': data['note'] if data['note'] else '',
+                'tags': data['tags'] if 'tags' in data.keys() else '',
+                'link': data['link'] if data['link'] else ''
+            }
+
+            # 获取用户信息
+            user = update.effective_user
+            username = data['username'] if 'username' in data.keys() and data['username'] else ''
+
+            # 尝试获取用户 bio（用于重复检测）
+            user_bio = ''
+            try:
+                chat = await context.bot.get_chat(user_id)
+                user_bio = chat.bio or ''
+            except Exception as e:
+                logger.debug(f"获取用户 bio 失败: {e}")
+
+            user_info = {
+                'user_id': user_id,
+                'username': username or user.username or '',
+                'bio': user_bio
+            }
+
+            # 执行审核（包含重复检测和 AI 审核）
+            is_approved, should_continue, review_message = await perform_review(
+                update, context, submission_data, user_info
+            )
+
+            if not should_continue:
+                # 审核未通过，终止发布流程
+                logger.info(f"投稿审核未通过: user_id={user_id}, message={review_message}")
+                # 清理用户会话数据
+                try:
+                    async with get_db() as conn:
+                        c = await conn.cursor()
+                        await c.execute("DELETE FROM submissions WHERE user_id=?", (user_id,))
+                        await conn.commit()
+                    logger.info(f"已删除用户 {user_id} 的投稿记录")
+                except Exception as e:
+                    logger.error(f"清理投稿数据失败: {e}")
+                return ConversationHandler.END
 
         # 安全处理spoiler字段，防止None值导致AttributeError
         spoiler_value = data["spoiler"] if "spoiler" in data.keys() and data["spoiler"] else "false"
         spoiler_flag = spoiler_value.lower() == "true"
         sent_message = None
         all_message_ids = []  # 用于记录所有发送的消息ID
-        
+
+        # 处理纯文本投稿
+        if text_content and not media_list and not doc_list:
+            sent_message = await handle_text_publish(context, text_content, caption, spoiler_flag)
+            if sent_message:
+                all_message_ids.append(sent_message.message_id)
         # 处理媒体文件
-        if media_list:
+        elif media_list:
             sent_message, all_message_ids = await handle_media_publish(context, media_list, caption, spoiler_flag)
         
         # 处理文档文件
@@ -237,8 +301,43 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
         )
         
         # 保存已发布的帖子信息到数据库（用于热度统计和搜索）
-        await save_published_post(user_id, sent_message.message_id, data, media_list, doc_list, all_message_ids)
-        
+        await save_published_post(user_id, sent_message.message_id, data, media_list, doc_list, all_message_ids, text_content)
+
+        # 保存投稿指纹（用于重复检测）
+        if DUPLICATE_CHECK_ENABLED:
+            try:
+                # 构建投稿数据
+                submission_data = {
+                    'text_content': text_content,
+                    'title': data['title'] if data['title'] else '',
+                    'note': data['note'] if data['note'] else '',
+                    'tags': data['tags'] if 'tags' in data.keys() else '',
+                    'link': data['link'] if data['link'] else ''
+                }
+
+                # 获取用户名
+                user = update.effective_user
+                username = data['username'] if 'username' in data.keys() and data['username'] else ''
+
+                # 尝试获取用户 bio
+                user_bio = ''
+                try:
+                    chat = await context.bot.get_chat(user_id)
+                    user_bio = chat.bio or ''
+                except Exception:
+                    pass
+
+                await save_fingerprint_after_publish(
+                    user_id=user_id,
+                    username=username or user.username or '',
+                    submission_data=submission_data,
+                    user_bio=user_bio,
+                    submission_id=sent_message.message_id
+                )
+                logger.info(f"已保存投稿指纹: user_id={user_id}, message_id={sent_message.message_id}")
+            except Exception as e:
+                logger.error(f"保存投稿指纹失败: {e}")
+
         # 向所有者发送投稿通知
         if NOTIFY_OWNER and OWNER_ID:
             # 记录详细的调试信息
@@ -576,6 +675,47 @@ async def handle_media_publish(context, media_list, caption, spoiler_flag):
             if caption_message:
                 return (caption_message, [caption_message.message_id])
             return (None, [])
+
+async def handle_text_publish(context, text_content, caption, spoiler_flag):
+    """
+    处理纯文本投稿发布
+
+    Args:
+        context: 回调上下文
+        text_content: 纯文本投稿内容
+        caption: 额外说明（标签、链接等）
+        spoiler_flag: 是否标记为剧透
+
+    Returns:
+        发送的消息对象或None
+    """
+    try:
+        # 组合完整的消息内容
+        # 纯文本模式：text_content 是正文，caption 包含标签等元信息
+        if caption:
+            # 在剧透模式下，将正文用剧透标签包裹
+            if spoiler_flag:
+                full_text = f"<tg-spoiler>{text_content}</tg-spoiler>\n\n{caption}"
+            else:
+                full_text = f"{text_content}\n\n{caption}"
+        else:
+            if spoiler_flag:
+                full_text = f"<tg-spoiler>{text_content}</tg-spoiler>"
+            else:
+                full_text = text_content
+
+        sent_message = await safe_send(
+            context.bot.send_message,
+            chat_id=CHANNEL_ID,
+            text=full_text,
+            parse_mode='HTML'
+        )
+        logger.info(f"纯文本投稿发送成功，message_id={sent_message.message_id}")
+        return sent_message
+    except Exception as e:
+        logger.error(f"发送纯文本投稿失败: {e}")
+        return None
+
 
 async def handle_document_publish(context, doc_list, caption=None, reply_to_message_id=None):
     """
