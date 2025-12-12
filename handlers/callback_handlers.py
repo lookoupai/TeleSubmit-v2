@@ -15,6 +15,7 @@ from config.settings import OWNER_ID
 from handlers.publish import publish_submission
 from handlers.stats_handlers import get_hot_posts, update_post_stats
 from handlers.search_handlers import search_posts_by_tag
+from handlers.rating_handlers import handle_rating_callback
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +37,12 @@ async def handle_callback_query(update: Update, context: CallbackContext):
     logger.info(f"收到回调查询: {data} 来自用户: {user_id}")
     
     try:
+        # 评分相关
+        if data.startswith("rating_"):
+            await handle_rating_callback(update, context)
+
         # 投稿确认相关
-        if data.startswith("submit_confirm_"):
+        elif data.startswith("submit_confirm_"):
             await handle_submit_confirm(update, context)
         elif data.startswith("submit_edit_"):
             await handle_submit_edit(update, context)
@@ -679,4 +684,3 @@ async def handle_back(update: Update, context: CallbackContext):
         "🔙 返回上一页",
         reply_markup=None
     )
-

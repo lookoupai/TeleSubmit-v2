@@ -3,6 +3,7 @@
 提供各种场景的 InlineKeyboard 和 ReplyKeyboard
 """
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from config.settings import CUSTOM_BUTTON_ROWS
 
 
 class Keyboards:
@@ -223,6 +224,43 @@ class Keyboards:
         """移除键盘"""
         return ReplyKeyboardRemove()
 
+    @staticmethod
+    def rating_keyboard(subject_id: int, avg_score: float, vote_count: int):
+        """
+        评分键盘
+
+        第一行：1⭐ ~ 5⭐ 评分按钮
+        第二行：汇总信息，仅用于展示当前平均分和人数
+        """
+        buttons_row = [
+            InlineKeyboardButton("1⭐", callback_data=f"rating_{subject_id}_1"),
+            InlineKeyboardButton("2⭐", callback_data=f"rating_{subject_id}_2"),
+            InlineKeyboardButton("3⭐", callback_data=f"rating_{subject_id}_3"),
+            InlineKeyboardButton("4⭐", callback_data=f"rating_{subject_id}_4"),
+            InlineKeyboardButton("5⭐", callback_data=f"rating_{subject_id}_5"),
+        ]
+
+        if vote_count > 0:
+            summary_text = f"⭐ {avg_score:.1f}（{vote_count} 人参与）"
+        else:
+            summary_text = "⭐ 当前暂无评分，欢迎点击评分"
+
+        summary_row = [
+            InlineKeyboardButton(summary_text, callback_data="rating_info")
+        ]
+
+        rows = [buttons_row, summary_row]
+
+        # 追加自定义按钮行（来自配置文件 CUSTOM_BUTTON_ROWS）
+        for row in CUSTOM_BUTTON_ROWS:
+            btn_row = []
+            for text, url in row:
+                btn_row.append(InlineKeyboardButton(text, url=url))
+            if btn_row:
+                rows.append(btn_row)
+
+        return InlineKeyboardMarkup(rows)
+
 
 class QuickReplies:
     """快捷回复"""
@@ -251,4 +289,3 @@ class QuickReplies:
             [KeyboardButton("✅ 完成"), KeyboardButton("❌ 取消")]
         ]
         return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-

@@ -72,7 +72,7 @@ async def init_db():
             except Exception:
                 pass
 
-            # 已发布帖子表（用于热度统计和搜索）
+            # 已发布帖子表（用于热度统计、搜索和评分）
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS published_posts (
                     message_id INTEGER PRIMARY KEY,
@@ -94,7 +94,10 @@ async def init_db():
                     last_update REAL,
                     related_message_ids TEXT,
                     is_deleted INTEGER DEFAULT 0,
-                    text_content TEXT
+                    text_content TEXT,
+                    rating_subject_id INTEGER,
+                    rating_avg REAL DEFAULT 0.0,
+                    rating_votes INTEGER DEFAULT 0
                 )
             ''')
 
@@ -113,12 +116,86 @@ async def init_db():
             except Exception:
                 pass
 
+            # 添加评分相关字段到 published_posts
+            try:
+                await conn.execute('ALTER TABLE published_posts ADD COLUMN rating_subject_id INTEGER')
+                logger.info("已添加 rating_subject_id 字段到 published_posts 表")
+            except Exception:
+                pass
+
+            try:
+                await conn.execute('ALTER TABLE published_posts ADD COLUMN rating_avg REAL DEFAULT 0.0')
+                logger.info("已添加 rating_avg 字段到 published_posts 表")
+            except Exception:
+                pass
+
+            try:
+                await conn.execute('ALTER TABLE published_posts ADD COLUMN rating_votes INTEGER DEFAULT 0')
+                logger.info("已添加 rating_votes 字段到 published_posts 表")
+            except Exception:
+                pass
+
             # 创建索引以提升查询性能
             await conn.execute('CREATE INDEX IF NOT EXISTS idx_heat_score ON published_posts(heat_score DESC)')
             await conn.execute('CREATE INDEX IF NOT EXISTS idx_publish_time ON published_posts(publish_time DESC)')
             await conn.execute('CREATE INDEX IF NOT EXISTS idx_user_id ON published_posts(user_id)')
             await conn.execute('CREATE INDEX IF NOT EXISTS idx_tags ON published_posts(tags)')
             await conn.execute('CREATE INDEX IF NOT EXISTS idx_is_deleted ON published_posts(is_deleted)')
+            await conn.execute('CREATE INDEX IF NOT EXISTS idx_rating_subject_id ON published_posts(rating_subject_id)')
+
+            # ============================================
+            # 评分实体表
+            # ============================================
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS rating_subjects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    subject_type TEXT NOT NULL,
+                    subject_key TEXT NOT NULL,
+                    display_name TEXT,
+                    score_sum INTEGER DEFAULT 0,
+                    vote_count INTEGER DEFAULT 0,
+                    avg_score REAL DEFAULT 0.0,
+                    created_at REAL DEFAULT (strftime('%s', 'now')),
+                    updated_at REAL DEFAULT (strftime('%s', 'now'))
+                )
+            ''')
+
+            await conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_rating_subject_unique ON rating_subjects(subject_type, subject_key)')
+
+            # ============================================
+            # 评分标识表
+            # ============================================
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS rating_subject_identifiers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    subject_id INTEGER NOT NULL,
+                    identifier_type TEXT NOT NULL,
+                    identifier_value TEXT NOT NULL,
+                    created_at REAL DEFAULT (strftime('%s', 'now')),
+                    FOREIGN KEY (subject_id) REFERENCES rating_subjects(id)
+                )
+            ''')
+
+            await conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_rating_identifier_unique ON rating_subject_identifiers(identifier_type, identifier_value)')
+            await conn.execute('CREATE INDEX IF NOT EXISTS idx_rating_identifier_subject ON rating_subject_identifiers(subject_id)')
+
+            # ============================================
+            # 评分投票表
+            # ============================================
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS rating_votes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    subject_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    score INTEGER NOT NULL,
+                    created_at REAL DEFAULT (strftime('%s', 'now')),
+                    updated_at REAL DEFAULT (strftime('%s', 'now')),
+                    FOREIGN KEY (subject_id) REFERENCES rating_subjects(id)
+                )
+            ''')
+
+            await conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_rating_vote_unique ON rating_votes(subject_id, user_id)')
+            await conn.execute('CREATE INDEX IF NOT EXISTS idx_rating_vote_subject ON rating_votes(subject_id)')
 
             # ============================================
             # 投稿指纹表（用于重复检测）

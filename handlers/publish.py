@@ -15,15 +15,27 @@ from telegram import (
 )
 from telegram.ext import ConversationHandler, CallbackContext
 
-from config.settings import CHANNEL_ID, NET_TIMEOUT, OWNER_ID, NOTIFY_OWNER, DUPLICATE_CHECK_ENABLED, AI_REVIEW_ENABLED
+from config.settings import CHANNEL_ID, NET_TIMEOUT, OWNER_ID, NOTIFY_OWNER, DUPLICATE_CHECK_ENABLED, AI_REVIEW_ENABLED, RATING_ENABLED
 from database.db_manager import get_db, cleanup_old_data
 from utils.helper_functions import build_caption, safe_send
 from utils.search_engine import get_search_engine, PostDocument
 from handlers.review_handlers import perform_review, save_fingerprint_after_publish
+from utils.rating_service import get_rating_service
 
 logger = logging.getLogger(__name__)
 
-async def save_published_post(user_id, message_id, data, media_list, doc_list, all_message_ids=None, text_content=None):
+async def save_published_post(
+    user_id,
+    message_id,
+    data,
+    media_list,
+    doc_list,
+    all_message_ids=None,
+    text_content=None,
+    rating_subject_id=None,
+    rating_avg=None,
+    rating_votes=None,
+):
     """
     保存已发布的帖子信息到数据库和搜索索引
 
@@ -86,6 +98,11 @@ async def save_published_post(user_id, message_id, data, media_list, doc_list, a
                 related_ids_json = json.dumps(related_ids)
                 logger.info(f"记录{len(related_ids)}个关联消息ID: {related_ids}")
         
+        # 评分快照（允许为空，避免破坏现有逻辑）
+        rating_subject_id = rating_subject_id if rating_subject_id is not None else None
+        rating_avg = float(rating_avg) if rating_avg is not None else 0.0
+        rating_votes = int(rating_votes) if rating_votes is not None else 0
+
         # 保存到数据库并获取 post_id
         post_id = None
         async with get_db() as conn:
@@ -93,8 +110,10 @@ async def save_published_post(user_id, message_id, data, media_list, doc_list, a
             await cursor.execute("""
                 INSERT INTO published_posts
                 (message_id, user_id, username, title, tags, link, note,
-                 content_type, file_ids, caption, filename, publish_time, last_update, related_message_ids, text_content)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 content_type, file_ids, caption, filename, publish_time,
+                 last_update, related_message_ids, text_content,
+                 rating_subject_id, rating_avg, rating_votes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 message_id,
                 user_id,
@@ -110,7 +129,10 @@ async def save_published_post(user_id, message_id, data, media_list, doc_list, a
                 publish_time.timestamp(),
                 publish_time.timestamp(),
                 related_ids_json,
-                text_content
+                text_content,
+                rating_subject_id,
+                rating_avg,
+                rating_votes,
             ))
             post_id = cursor.lastrowid  # 获取插入的行ID
             await conn.commit()
@@ -257,6 +279,19 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
         sent_message = None
         all_message_ids = []  # 用于记录所有发送的消息ID
 
+        # 评分实体（可选）
+        rating_subject_info = None
+        if RATING_ENABLED:
+            try:
+                rating_service = get_rating_service()
+                rating_subject_info = await rating_service.get_or_create_subject_from_submission(
+                    submission_row=data,
+                    user_id=user_id,
+                    source_chat_id=None,
+                )
+            except Exception as e:
+                logger.error(f"解析评分实体时出错: {e}", exc_info=True)
+
         # 处理纯文本投稿
         if text_content and not media_list and not doc_list:
             sent_message = await handle_text_publish(context, text_content, caption, spoiler_flag)
@@ -301,7 +336,40 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
         )
         
         # 保存已发布的帖子信息到数据库（用于热度统计和搜索）
-        await save_published_post(user_id, sent_message.message_id, data, media_list, doc_list, all_message_ids, text_content)
+        rating_subject_id = None
+        rating_avg = None
+        rating_votes = None
+        if rating_subject_info:
+            rating_subject_id = rating_subject_info.get("subject_id")
+            rating_avg = rating_subject_info.get("avg_score", 0.0)
+            rating_votes = rating_subject_info.get("vote_count", 0)
+
+        await save_published_post(
+            user_id,
+            sent_message.message_id,
+            data,
+            media_list,
+            doc_list,
+            all_message_ids,
+            text_content,
+            rating_subject_id=rating_subject_id,
+            rating_avg=rating_avg,
+            rating_votes=rating_votes,
+        )
+
+        # 为频道消息附加评分键盘
+        if RATING_ENABLED and rating_subject_info and rating_subject_id is not None:
+            try:
+                rating_service = get_rating_service()
+                await rating_service.attach_rating_keyboard(
+                    context=context,
+                    message_id=sent_message.message_id,
+                    subject_id=rating_subject_id,
+                    avg_score=rating_avg or 0.0,
+                    vote_count=rating_votes or 0,
+                )
+            except Exception as e:
+                logger.error(f"为消息附加评分键盘失败: {e}", exc_info=True)
 
         # 保存投稿指纹（用于重复检测）
         if DUPLICATE_CHECK_ENABLED:

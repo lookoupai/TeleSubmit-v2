@@ -164,3 +164,29 @@ NOTIFY_USER_DUPLICATE = true
 RATE_LIMIT_ENABLED = true
 RATE_LIMIT_COUNT = 3
 RATE_LIMIT_WINDOW_HOURS = 24
+
+[RATING]
+# 评分功能配置
+
+# 是否启用评分功能
+ENABLED = true
+
+# 是否允许用户修改自己的评分（true/false）
+ALLOW_UPDATE = true
+
+# 按钮样式（预留，当前仅支持 stars）
+BUTTON_STYLE = stars
+
+# 达到多少条评分后，在统计/搜索中突出展示（预留）
+MIN_VOTES_TO_HIGHLIGHT = 1
+
+[CUSTOM_BUTTONS]
+# 自定义按钮配置，用于在评分按钮下面追加多行自定义按钮
+# 每一项代表一行，行内多个按钮用分号 ; 分隔，单个按钮格式为：文本|URL
+#
+# 示例（两列一行的布局）：
+# ROW1 = 💬 联系客服|https://t.me/your_support ; 🤖 购买机器人|https://t.me/your_bot
+# ROW2 = 📢 官方频道|https://t.me/your_channel
+
+# 默认不启用任何自定义按钮，如需使用请取消注释并修改为自己的链接
+# ROW1 = 💬 联系客服|https://t.me/your_support ; 🤖 购买机器人|https://t.me/your_bot

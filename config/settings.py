@@ -323,6 +323,53 @@ RATE_LIMIT_COUNT = int(_rate_limit_count) if _rate_limit_count else get_config_i
 _rate_limit_window = get_env_or_config('RATE_LIMIT_WINDOW_HOURS', 'DUPLICATE_CHECK', 'RATE_LIMIT_WINDOW_HOURS')
 RATE_LIMIT_WINDOW_HOURS = int(_rate_limit_window) if _rate_limit_window else get_config_int('DUPLICATE_CHECK', 'RATE_LIMIT_WINDOW_HOURS', 24)
 
+# ============================================
+# 评分配置
+# ============================================
+_rating_enabled_env = os.getenv('RATING_ENABLED')
+if _rating_enabled_env is not None:
+    RATING_ENABLED = _rating_enabled_env.lower() in ('true', '1', 'yes')
+else:
+    RATING_ENABLED = get_config_bool('RATING', 'ENABLED', True)
+
+_rating_allow_update_env = os.getenv('RATING_ALLOW_UPDATE')
+if _rating_allow_update_env is not None:
+    RATING_ALLOW_UPDATE = _rating_allow_update_env.lower() in ('true', '1', 'yes')
+else:
+    RATING_ALLOW_UPDATE = get_config_bool('RATING', 'ALLOW_UPDATE', True)
+
+RATING_BUTTON_STYLE = get_env_or_config('RATING_BUTTON_STYLE', 'RATING', 'BUTTON_STYLE', fallback='stars')
+
+_rating_min_votes = get_env_or_config('RATING_MIN_VOTES_TO_HIGHLIGHT', 'RATING', 'MIN_VOTES_TO_HIGHLIGHT')
+RATING_MIN_VOTES_TO_HIGHLIGHT = int(_rating_min_votes) if _rating_min_votes else get_config_int('RATING', 'MIN_VOTES_TO_HIGHLIGHT', 1)
+
+# 自定义按钮配置（InlineKeyboard 按行配置）
+CUSTOM_BUTTON_ROWS = []
+try:
+    if config.has_section('CUSTOM_BUTTONS'):
+        for _, value in config.items('CUSTOM_BUTTONS'):
+            if not value:
+                continue
+            row_buttons = []
+            parts = value.split(';')
+            for part in parts:
+                part = part.strip()
+                if not part:
+                    continue
+                if '|' not in part:
+                    continue
+                text, url = part.split('|', 1)
+                text = text.strip()
+                url = url.strip()
+                if not text or not url:
+                    continue
+                row_buttons.append((text, url))
+            if row_buttons:
+                CUSTOM_BUTTON_ROWS.append(row_buttons)
+except Exception as e:
+    logger.warning(f"解析 CUSTOM_BUTTONS 配置失败: {e}")
+    CUSTOM_BUTTON_ROWS = []
+
 # 打印配置信息（调试用）
 logger.info(f"配置加载完成:")
 logger.info(f"  - BOT_MODE: {BOT_MODE}")
@@ -346,6 +393,7 @@ logger.info(f"  - DB_CACHE_KB: {DB_CACHE_KB}")
 logger.info(f"  - TEXT_ONLY_MODE: {TEXT_ONLY_MODE}")
 logger.info(f"  - AI_REVIEW_ENABLED: {AI_REVIEW_ENABLED}")
 logger.info(f"  - DUPLICATE_CHECK_ENABLED: {DUPLICATE_CHECK_ENABLED}")
+logger.info(f"  - RATING_ENABLED: {RATING_ENABLED}")
 if AI_REVIEW_ENABLED:
     logger.info(f"  - AI_REVIEW_MODEL: {AI_REVIEW_MODEL}")
     logger.info(f"  - AI_REVIEW_CHANNEL_TOPIC: {AI_REVIEW_CHANNEL_TOPIC}")

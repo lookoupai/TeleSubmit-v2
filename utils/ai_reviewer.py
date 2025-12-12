@@ -210,8 +210,9 @@ class AIReviewer:
 审核标准：
 1. 内容必须与「{self.channel_topic}」主题相关
 2. 相关关键词包括：{', '.join(self.topic_keywords)}
-3. 广告、垃圾信息、违规内容应拒绝
-4. 如果内容模糊或无法判断，设置 requires_manual 为 true
+3. 本频道允许主题相关的供需/推广/广告内容；只要与主题相关即可通过
+4. 与主题无关的内容（包括无关广告、账号供需等）应判为“无关内容”并拒绝
+5. 如果内容模糊或无法判断，设置 requires_manual 为 true，分类为“待定”
 {strict_note}
 
 请以 JSON 格式返回审核结果（只返回 JSON，不要其他内容）：
@@ -219,7 +220,7 @@ class AIReviewer:
     "approved": true或false,
     "confidence": 0.0到1.0之间的数字,
     "reason": "简短的审核理由",
-    "category": "内容分类（如：{self.channel_topic}/广告/无关内容/待定）",
+    "category": "内容分类（仅可填：相关/无关内容/待定）",
     "requires_manual": true或false
 }}"""
 
@@ -386,7 +387,23 @@ class AIReviewer:
         """判断是否应该自动拒绝"""
         if not AI_REVIEW_AUTO_REJECT:
             return False
+        if self._is_off_topic_category(result.category):
+            return True
         return not result.approved and result.confidence >= 0.8 and not result.requires_manual
+
+    def _is_off_topic_category(self, category: str) -> bool:
+        """判断分类是否为无关内容"""
+        if not category:
+            return False
+        normalized = str(category).strip().lower()
+        if not normalized:
+            return False
+        return (
+            '无关' in normalized
+            or 'irrelevant' in normalized
+            or 'off-topic' in normalized
+            or 'off topic' in normalized
+        )
 
     def should_manual_review(self, result: ReviewResult) -> bool:
         """判断是否需要人工审核"""
