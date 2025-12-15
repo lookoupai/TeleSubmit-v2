@@ -57,6 +57,7 @@ async def cancel(update: Update, context: CallbackContext) -> int:
             await context.bot.send_message(chat_id=update.effective_chat.id, text=message_text)
         except Exception:
             pass
+    context.user_data.pop("paid_ad", None)
     return ConversationHandler.END
 
 
@@ -83,6 +84,7 @@ async def cancel_callback(update: Update, context: CallbackContext) -> int:
             await query.message.reply_text("❌ 投稿已取消")
         except Exception:
             pass
+    context.user_data.pop("paid_ad", None)
     return ConversationHandler.END
 
 async def help_command(update: Update, context: CallbackContext):

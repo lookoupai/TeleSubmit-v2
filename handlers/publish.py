@@ -11,16 +11,29 @@ from telegram import (
     InputMediaVideo,
     InputMediaAnimation,
     InputMediaAudio,
-    InputMediaDocument
+    InputMediaDocument,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
 )
 from telegram.ext import ConversationHandler, CallbackContext
 
-from config.settings import CHANNEL_ID, NET_TIMEOUT, OWNER_ID, NOTIFY_OWNER, DUPLICATE_CHECK_ENABLED, AI_REVIEW_ENABLED, RATING_ENABLED
+from config.settings import (
+    CHANNEL_ID,
+    NET_TIMEOUT,
+    OWNER_ID,
+    NOTIFY_OWNER,
+    DUPLICATE_CHECK_ENABLED,
+    AI_REVIEW_ENABLED,
+    RATING_ENABLED,
+    PAID_AD_ENABLED,
+    PAID_AD_PUBLISH_PREFIX,
+)
 from database.db_manager import get_db, cleanup_old_data
 from utils.helper_functions import build_caption, safe_send
 from utils.search_engine import get_search_engine, PostDocument
 from handlers.review_handlers import perform_review, save_fingerprint_after_publish
 from utils.rating_service import get_rating_service
+from utils.paid_ad_service import reserve_one_credit, refund_one_credit
 
 logger = logging.getLogger(__name__)
 
@@ -225,6 +238,8 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
             await update.message.reply_text("❌ 未检测到任何上传文件或文本内容，请重新发送 /start")
             return ConversationHandler.END
 
+        is_paid_ad = bool(context.user_data.get("paid_ad")) and PAID_AD_ENABLED
+
         # === 审核流程：重复检测和 AI 审核 ===
         if DUPLICATE_CHECK_ENABLED or AI_REVIEW_ENABLED:
             # 构建投稿数据用于审核
@@ -256,7 +271,11 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
 
             # 执行审核（包含重复检测和 AI 审核）
             is_approved, should_continue, review_message = await perform_review(
-                update, context, submission_data, user_info
+                update,
+                context,
+                submission_data,
+                user_info,
+                skip_ai_review=is_paid_ad,
             )
 
             if not should_continue:
@@ -276,6 +295,19 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
         # 安全处理spoiler字段，防止None值导致AttributeError
         spoiler_value = data["spoiler"] if "spoiler" in data.keys() and data["spoiler"] else "false"
         spoiler_flag = spoiler_value.lower() == "true"
+
+        # 付费广告：预扣 1 次，失败则退回
+        if is_paid_ad:
+            reserved = await reserve_one_credit(user_id)
+            if not reserved:
+                context.user_data.pop("paid_ad", None)
+                await update.message.reply_text(
+                    "❌ 广告发布次数不足，请先购买。\n\n"
+                    "点击“购买广告次数”选择套餐，或使用 /ad_balance 查看余额。",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("购买广告次数", callback_data="paid_ad_buy_menu")]]),
+                )
+                return ConversationHandler.END
+
         sent_message = None
         all_message_ids = []  # 用于记录所有发送的消息ID
 
@@ -292,14 +324,20 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
             except Exception as e:
                 logger.error(f"解析评分实体时出错: {e}", exc_info=True)
 
+        # 广告前缀：媒体/文档/混合放在 caption 顶部；纯文本放在消息顶部
+        ad_prefix = (PAID_AD_PUBLISH_PREFIX or "📢 广告").strip() if is_paid_ad else ""
+        caption_for_media = caption
+        if is_paid_ad and not (text_content and not media_list and not doc_list):
+            caption_for_media = f"{ad_prefix}\n\n{caption}" if caption else ad_prefix
+
         # 处理纯文本投稿
         if text_content and not media_list and not doc_list:
-            sent_message = await handle_text_publish(context, text_content, caption, spoiler_flag)
+            sent_message = await handle_text_publish(context, text_content, caption, spoiler_flag, prefix=ad_prefix)
             if sent_message:
                 all_message_ids.append(sent_message.message_id)
         # 处理媒体文件
         elif media_list:
-            sent_message, all_message_ids = await handle_media_publish(context, media_list, caption, spoiler_flag)
+            sent_message, all_message_ids = await handle_media_publish(context, media_list, caption_for_media, spoiler_flag)
         
         # 处理文档文件
         if doc_list:
@@ -315,12 +353,15 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
                     all_message_ids.append(doc_msg.message_id)
             else:
                 # 如果只有文档，直接发送
-                sent_message = await handle_document_publish(context, doc_list, caption)
+                sent_message = await handle_document_publish(context, doc_list, caption_for_media)
                 if sent_message:
                     all_message_ids.append(sent_message.message_id)
         
         # 处理结果
         if not sent_message:
+            if is_paid_ad:
+                await refund_one_credit(user_id)
+                context.user_data.pop("paid_ad", None)
             await update.message.reply_text("❌ 内容发送失败，请稍后再试")
             return ConversationHandler.END
             
@@ -331,9 +372,15 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
         else:
             submission_link = "频道无公开链接"
 
-        await update.message.reply_text(
-            f"🎉 投稿已成功发布到频道！\n点击以下链接查看投稿：\n{submission_link}"
-        )
+        if is_paid_ad:
+            context.user_data.pop("paid_ad", None)
+            await update.message.reply_text(
+                f"✅ 广告已成功发布到频道（已扣减 1 次）\n点击以下链接查看：\n{submission_link}"
+            )
+        else:
+            await update.message.reply_text(
+                f"🎉 投稿已成功发布到频道！\n点击以下链接查看投稿：\n{submission_link}"
+            )
         
         # 保存已发布的帖子信息到数据库（用于热度统计和搜索）
         rating_subject_id = None
@@ -744,7 +791,7 @@ async def handle_media_publish(context, media_list, caption, spoiler_flag):
                 return (caption_message, [caption_message.message_id])
             return (None, [])
 
-async def handle_text_publish(context, text_content, caption, spoiler_flag):
+async def handle_text_publish(context, text_content, caption, spoiler_flag, prefix: str = ""):
     """
     处理纯文本投稿发布
 
@@ -771,6 +818,9 @@ async def handle_text_publish(context, text_content, caption, spoiler_flag):
                 full_text = f"<tg-spoiler>{text_content}</tg-spoiler>"
             else:
                 full_text = text_content
+
+        if prefix:
+            full_text = f"{prefix}\n\n{full_text}"
 
         sent_message = await safe_send(
             context.bot.send_message,

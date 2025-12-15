@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class WebhookServer:
     """Webhook 服务器类"""
     
-    def __init__(self, application, port: int, path: str, secret_token: str = None):
+    def __init__(self, application, port: int, path: str, secret_token: str = None, extra_routes=None):
         """
         初始化 Webhook 服务器
         
@@ -23,11 +23,13 @@ class WebhookServer:
             port: 监听端口
             path: Webhook 路径
             secret_token: 可选的密钥 token，用于验证请求来源
+            extra_routes: 额外路由列表（method, path, handler）
         """
         self.application = application
         self.port = port
         self.path = path
         self.secret_token = secret_token or secrets.token_urlsafe(32)
+        self.extra_routes = extra_routes or []
         self.web_app = None
         self.runner = None
         
@@ -117,6 +119,18 @@ class WebhookServer:
         # 注册路由
         self.web_app.router.add_post(self.path, self.webhook_handler)
         self.web_app.router.add_get('/health', self.health_handler)
+        for route in self.extra_routes:
+            try:
+                method, path, handler = route
+            except Exception:
+                continue
+            if not method or not path or not handler:
+                continue
+            try:
+                self.web_app.router.add_route(str(method).upper(), str(path), handler)
+                logger.info(f"已注册额外路由: {method} {path}")
+            except Exception as e:
+                logger.error(f"注册额外路由失败: {route}, error={e}")
         
         # 创建并启动 runner
         self.runner = web.AppRunner(self.web_app)
@@ -217,4 +231,3 @@ async def delete_webhook(application):
     except Exception as e:
         logger.error(f"❌ 删除 Webhook 时发生错误: {e}", exc_info=True)
         return False
-

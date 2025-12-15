@@ -134,6 +134,31 @@ FALLBACK_ON_ERROR = manual
 NOTIFY_ADMIN_ON_REJECT = true
 NOTIFY_ADMIN_ON_DUPLICATE = true
 
+[PAID_AD]
+# 付费广告发布（UPAY_PRO）配置
+
+# 是否启用付费广告功能
+ENABLED = false
+
+# 套餐（次数:金额），逗号分隔
+PACKAGES = 1:10,15:100
+CURRENCY = USDT
+PUBLISH_PREFIX = 📢 广告
+
+# UPAY_PRO 网关
+UPAY_BASE_URL = http://127.0.0.1:8090
+UPAY_SECRET_KEY = 
+UPAY_DEFAULT_TYPE = USDT-TRC20
+UPAY_ALLOWED_TYPES = USDT-TRC20,TRX,USDT-BSC,USDT-ERC20,USDT-Polygon
+
+# 对外回调域名（默认复用 WEBHOOK.URL；Polling 模式如需回调请显式配置）
+PUBLIC_BASE_URL =
+UPAY_NOTIFY_PATH = /pay/notify/upay
+UPAY_REDIRECT_PATH = /pay/return
+
+# 订单过期（分钟）
+PAY_EXPIRE_MINUTES = 30
+
 [DUPLICATE_CHECK]
 # 重复投稿检测配置
 

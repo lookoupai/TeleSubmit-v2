@@ -16,6 +16,7 @@ from handlers.publish import publish_submission
 from handlers.stats_handlers import get_hot_posts, update_post_stats
 from handlers.search_handlers import search_posts_by_tag
 from handlers.rating_handlers import handle_rating_callback
+from handlers.paid_ad_handlers import handle_paid_ad_callback
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,9 @@ async def handle_callback_query(update: Update, context: CallbackContext):
         # 评分相关
         if data.startswith("rating_"):
             await handle_rating_callback(update, context)
+        # 付费广告
+        elif data.startswith("paid_ad_"):
+            await handle_paid_ad_callback(update, context)
 
         # 投稿确认相关
         elif data.startswith("submit_confirm_"):

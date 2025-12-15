@@ -285,6 +285,48 @@ async def init_db():
             await conn.execute('CREATE INDEX IF NOT EXISTS idx_pr_status ON pending_reviews(status)')
             await conn.execute('CREATE INDEX IF NOT EXISTS idx_pr_user_id ON pending_reviews(user_id)')
 
+            # ============================================
+            # 付费广告次数（UPAY_PRO）相关表
+            # ============================================
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS user_ad_credits (
+                    user_id INTEGER PRIMARY KEY,
+                    balance INTEGER NOT NULL DEFAULT 0,
+                    updated_at REAL
+                )
+            ''')
+
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS ad_orders (
+                    out_trade_no TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    sku_id TEXT NOT NULL,
+                    credits INTEGER NOT NULL,
+                    amount TEXT NOT NULL,
+                    currency TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    upay_trade_id TEXT,
+                    payment_url TEXT,
+                    expires_at REAL,
+                    created_at REAL NOT NULL,
+                    paid_at REAL
+                )
+            ''')
+            await conn.execute('CREATE INDEX IF NOT EXISTS idx_ad_orders_user_id ON ad_orders(user_id)')
+            await conn.execute('CREATE INDEX IF NOT EXISTS idx_ad_orders_status ON ad_orders(status)')
+
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS ad_credit_ledger (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    out_trade_no TEXT UNIQUE,
+                    user_id INTEGER NOT NULL,
+                    delta INTEGER NOT NULL,
+                    reason TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                )
+            ''')
+            await conn.execute('CREATE INDEX IF NOT EXISTS idx_ad_ledger_user_id ON ad_credit_ledger(user_id)')
+
             await conn.commit()
             logger.info("数据库初始化完成")
     except Exception as e:

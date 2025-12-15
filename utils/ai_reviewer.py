@@ -405,6 +405,10 @@ class AIReviewer:
             or 'off topic' in normalized
         )
 
+    def is_off_topic_category(self, category: str) -> bool:
+        """对外暴露的无关分类判断（避免外部直接调用内部实现）"""
+        return self._is_off_topic_category(category)
+
     def should_manual_review(self, result: ReviewResult) -> bool:
         """判断是否需要人工审核"""
         return result.requires_manual or result.confidence < 0.8

@@ -28,7 +28,8 @@ from dotenv import load_dotenv
 from config.settings import (
     TOKEN, TIMEOUT, BOT_MODE, MODE_MEDIA, MODE_DOCUMENT, MODE_MIXED, MODE_TEXT, MODE_ALL,
     RUN_MODE, WEBHOOK_URL, WEBHOOK_PORT, WEBHOOK_PATH, WEBHOOK_SECRET_TOKEN,
-    CHANNEL_ID, AI_REVIEW_ENABLED, DUPLICATE_CHECK_ENABLED
+    CHANNEL_ID, AI_REVIEW_ENABLED, DUPLICATE_CHECK_ENABLED,
+    PAID_AD_ENABLED, UPAY_NOTIFY_PATH
 )
 from models.state import STATE
 
@@ -80,6 +81,10 @@ from handlers.text_handlers import handle_text_content
 
 # 审核流程处理
 from handlers.review_handlers import handle_review_callback
+
+# 付费广告
+from handlers.paid_ad_handlers import ad as paid_ad, ad_balance as paid_ad_balance
+from handlers.paid_ad_notify import upay_notify
 
 # 错误处理
 from handlers.error_handler import error_handler
@@ -233,6 +238,8 @@ async def setup_bot_commands(application):
     commands = [
         BotCommand("start", "🚀 启动机器人"),
         BotCommand("submit", "📝 发起投稿"),
+        BotCommand("ad", "📢 发布广告（扣次数）"),
+        BotCommand("ad_balance", "💳 查看广告余额"),
         BotCommand("search", "🔍 搜索投稿内容"),
         BotCommand("tags", "🏷️ 查看标签云"),
         BotCommand("myposts", "📋 查看我的投稿"),
@@ -370,11 +377,15 @@ async def main():
             logger.info(f"已自动生成 Secret Token: {secret_token}")
         
         # 创建并启动 Webhook 服务器（包含健康检查）
+        extra_routes = []
+        if PAID_AD_ENABLED:
+            extra_routes.append(("POST", UPAY_NOTIFY_PATH, upay_notify))
         webhook_server = WebhookServer(
             application=application,
             port=WEBHOOK_PORT,
             path=WEBHOOK_PATH,
-            secret_token=secret_token
+            secret_token=secret_token,
+            extra_routes=extra_routes,
         )
         await webhook_server.start()
         
@@ -506,6 +517,7 @@ def setup_application(application):
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("cancel", cancel))
     application.add_handler(CommandHandler("settings", settings))
+    application.add_handler(CommandHandler("ad_balance", paid_ad_balance))
     application.add_handler(CommandHandler("blacklist", manage_blacklist), group=1)
     
     # 注册统计和搜索命令处理器
@@ -556,6 +568,7 @@ def setup_application(application):
         conv_handler = ConversationHandler(
             entry_points=[
                 CommandHandler("submit", submit),
+                CommandHandler("ad", paid_ad),
                 # 添加底部菜单按钮"开始投稿"作为 entry_point
                 MessageHandler(filters.Regex(r".*开始投稿$"), submit)
             ],

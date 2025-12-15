@@ -17,12 +17,14 @@ from config.settings import (
     DUPLICATE_CHECK_ENABLED,
     DUPLICATE_NOTIFY_USER,
     OWNER_ID,
-    ADMIN_IDS
+    ADMIN_IDS,
+    PAID_AD_ENABLED,
 )
 from database.db_manager import get_db
 from utils.ai_reviewer import get_ai_reviewer, ReviewResult
 from utils.duplicate_detector import get_duplicate_detector, DuplicateResult
 from utils.feature_extractor import get_feature_extractor
+from utils.paid_ad_service import get_balance
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +33,9 @@ async def perform_review(
     update: Update,
     context: CallbackContext,
     submission_data: dict,
-    user_info: dict
+    user_info: dict,
+    *,
+    skip_ai_review: bool = False,
 ) -> tuple:
     """
     执行完整的审核流程
@@ -63,7 +67,7 @@ async def perform_review(
             return (False, False, dup_result.message)
 
     # 2. AI 审核
-    if AI_REVIEW_ENABLED:
+    if AI_REVIEW_ENABLED and not skip_ai_review:
         review_result = await _perform_ai_review(submission_data)
 
         reviewer = get_ai_reviewer()
@@ -83,7 +87,7 @@ async def perform_review(
             await _send_to_manual_review(update, context, review_result, user_info, submission_data)
             return (False, False, "您的投稿已提交，正在等待管理员审核。")
 
-    # 未启用审核，直接通过
+    # 未启用审核（或跳过 AI 审核），直接通过
     return (True, True, "")
 
 
@@ -175,13 +179,34 @@ async def _handle_rejection(
 
     # 通知用户
     if AI_REVIEW_NOTIFY_USER:
-        message = (
-            "❌ 投稿未通过审核\n\n"
-            f"原因：{result.reason}\n\n"
-            f"本频道仅接受与「{AI_REVIEW_CHANNEL_TOPIC}」相关的内容投稿。\n"
-            "如有疑问，请联系管理员。"
-        )
-        await update.message.reply_text(message)
+        reviewer = get_ai_reviewer()
+        if PAID_AD_ENABLED and reviewer.is_off_topic_category(result.category):
+            balance = await get_balance(user_id)
+            keyboard = [
+                [
+                    InlineKeyboardButton("购买广告次数", callback_data="paid_ad_buy_menu"),
+                    InlineKeyboardButton("查看余额", callback_data="paid_ad_balance"),
+                ],
+                [
+                    InlineKeyboardButton("广告发布 /ad", callback_data="paid_ad_howto"),
+                ],
+            ]
+            message = (
+                "❌ 投稿未通过审核：主题无关\n\n"
+                f"原因：{result.reason}\n\n"
+                "若需发布广告，可购买广告发布次数（可批量购买，随时使用）。\n"
+                f"当前余额：{balance} 次\n\n"
+                "使用 /ad 发布广告（每次发布扣 1 次）。"
+            )
+            await update.message.reply_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            message = (
+                "❌ 投稿未通过审核\n\n"
+                f"原因：{result.reason}\n\n"
+                f"本频道仅接受与「{AI_REVIEW_CHANNEL_TOPIC}」相关的内容投稿。\n"
+                "如有疑问，请联系管理员。"
+            )
+            await update.message.reply_text(message)
 
     # 通知管理员
     if AI_REVIEW_NOTIFY_ADMIN_ON_REJECT and ADMIN_IDS:

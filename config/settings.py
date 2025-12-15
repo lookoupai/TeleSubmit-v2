@@ -4,6 +4,7 @@
 import os
 import configparser
 import logging
+from decimal import Decimal, InvalidOperation
 
 logger = logging.getLogger(__name__)
 
@@ -343,6 +344,78 @@ RATING_BUTTON_STYLE = get_env_or_config('RATING_BUTTON_STYLE', 'RATING', 'BUTTON
 _rating_min_votes = get_env_or_config('RATING_MIN_VOTES_TO_HIGHLIGHT', 'RATING', 'MIN_VOTES_TO_HIGHLIGHT')
 RATING_MIN_VOTES_TO_HIGHLIGHT = int(_rating_min_votes) if _rating_min_votes else get_config_int('RATING', 'MIN_VOTES_TO_HIGHLIGHT', 1)
 
+# ============================================
+# 付费广告（UPAY_PRO）配置
+# ============================================
+_paid_ad_enabled_env = os.getenv('PAID_AD_ENABLED')
+if _paid_ad_enabled_env is not None:
+    PAID_AD_ENABLED = _paid_ad_enabled_env.lower() in ('true', '1', 'yes')
+else:
+    PAID_AD_ENABLED = get_config_bool('PAID_AD', 'ENABLED', False)
+
+PAID_AD_CURRENCY = (get_env_or_config('PAID_AD_CURRENCY', 'PAID_AD', 'CURRENCY', fallback='USDT') or 'USDT').strip()
+PAID_AD_PUBLISH_PREFIX = (get_env_or_config('PAID_AD_PUBLISH_PREFIX', 'PAID_AD', 'PUBLISH_PREFIX', fallback='📢 广告') or '📢 广告').strip()
+
+PAID_AD_PACKAGES_RAW = (get_env_or_config('PAID_AD_PACKAGES', 'PAID_AD', 'PACKAGES', fallback='1:10,15:100') or '').strip()
+
+def _parse_paid_ad_packages(raw: str):
+    """
+    解析套餐配置：次数:金额，逗号分隔
+    例如：1:10,15:100
+    """
+    packages = []
+    if not raw:
+        return packages
+    parts = [p.strip() for p in raw.split(',') if p.strip()]
+    for idx, part in enumerate(parts):
+        if ':' not in part:
+            logger.warning(f"PAID_AD.PACKAGES 配置无效（缺少冒号）: {part}")
+            continue
+        credits_str, amount_str = [x.strip() for x in part.split(':', 1)]
+        try:
+            credits = int(credits_str)
+        except (ValueError, TypeError):
+            logger.warning(f"PAID_AD.PACKAGES 次数无效: {part}")
+            continue
+        if credits <= 0:
+            logger.warning(f"PAID_AD.PACKAGES 次数必须>0: {part}")
+            continue
+        try:
+            amount = Decimal(amount_str)
+        except (InvalidOperation, ValueError, TypeError):
+            logger.warning(f"PAID_AD.PACKAGES 金额无效: {part}")
+            continue
+        if amount <= 0:
+            logger.warning(f"PAID_AD.PACKAGES 金额必须>0: {part}")
+            continue
+        sku_id = f"p{idx+1}"
+        packages.append({
+            'sku_id': sku_id,
+            'credits': credits,
+            'amount': amount,
+        })
+    return packages
+
+PAID_AD_PACKAGES = _parse_paid_ad_packages(PAID_AD_PACKAGES_RAW)
+
+UPAY_BASE_URL = (get_env_or_config('UPAY_BASE_URL', 'PAID_AD', 'UPAY_BASE_URL', fallback='http://127.0.0.1:8090') or '').strip().rstrip('/')
+UPAY_SECRET_KEY = (get_env_or_config('UPAY_SECRET_KEY', 'PAID_AD', 'UPAY_SECRET_KEY', fallback='') or '').strip()
+UPAY_DEFAULT_TYPE = (get_env_or_config('UPAY_DEFAULT_TYPE', 'PAID_AD', 'UPAY_DEFAULT_TYPE', fallback='USDT-TRC20') or 'USDT-TRC20').strip()
+UPAY_ALLOWED_TYPES = [
+    t.strip() for t in (get_env_or_config('UPAY_ALLOWED_TYPES', 'PAID_AD', 'UPAY_ALLOWED_TYPES', fallback='USDT-TRC20') or '').split(',')
+    if t.strip()
+]
+
+PAID_AD_PUBLIC_BASE_URL = (
+    (get_env_or_config('PAID_AD_PUBLIC_BASE_URL', 'PAID_AD', 'PUBLIC_BASE_URL', fallback='') or '').strip().rstrip('/')
+    or (WEBHOOK_URL or '').strip().rstrip('/')
+)
+UPAY_NOTIFY_PATH = (get_env_or_config('UPAY_NOTIFY_PATH', 'PAID_AD', 'UPAY_NOTIFY_PATH', fallback='/pay/notify/upay') or '/pay/notify/upay').strip()
+UPAY_REDIRECT_PATH = (get_env_or_config('UPAY_REDIRECT_PATH', 'PAID_AD', 'UPAY_REDIRECT_PATH', fallback='/pay/return') or '/pay/return').strip()
+
+_pay_expire_minutes = get_env_or_config('PAY_EXPIRE_MINUTES', 'PAID_AD', 'PAY_EXPIRE_MINUTES')
+PAY_EXPIRE_MINUTES = int(_pay_expire_minutes) if _pay_expire_minutes else get_config_int('PAID_AD', 'PAY_EXPIRE_MINUTES', 30)
+
 # 自定义按钮配置（InlineKeyboard 按行配置）
 CUSTOM_BUTTON_ROWS = []
 try:
@@ -394,6 +467,17 @@ logger.info(f"  - TEXT_ONLY_MODE: {TEXT_ONLY_MODE}")
 logger.info(f"  - AI_REVIEW_ENABLED: {AI_REVIEW_ENABLED}")
 logger.info(f"  - DUPLICATE_CHECK_ENABLED: {DUPLICATE_CHECK_ENABLED}")
 logger.info(f"  - RATING_ENABLED: {RATING_ENABLED}")
+logger.info(f"  - PAID_AD_ENABLED: {PAID_AD_ENABLED}")
+if PAID_AD_ENABLED:
+    logger.info(f"  - PAID_AD_PACKAGES: {[(p['credits'], str(p['amount'])) for p in PAID_AD_PACKAGES] if PAID_AD_PACKAGES else '未配置'}")
+    logger.info(f"  - PAID_AD_CURRENCY: {PAID_AD_CURRENCY}")
+    logger.info(f"  - PAID_AD_PUBLISH_PREFIX: {PAID_AD_PUBLISH_PREFIX}")
+    logger.info(f"  - UPAY_BASE_URL: {UPAY_BASE_URL if UPAY_BASE_URL else '未设置'}")
+    logger.info(f"  - UPAY_DEFAULT_TYPE: {UPAY_DEFAULT_TYPE}")
+    logger.info(f"  - UPAY_ALLOWED_TYPES: {UPAY_ALLOWED_TYPES if UPAY_ALLOWED_TYPES else '未设置'}")
+    logger.info(f"  - UPAY_SECRET_KEY: {'已设置' if UPAY_SECRET_KEY else '未设置'}")
+    logger.info(f"  - PAID_AD_PUBLIC_BASE_URL: {PAID_AD_PUBLIC_BASE_URL if PAID_AD_PUBLIC_BASE_URL else '未设置'}")
+    logger.info(f"  - UPAY_NOTIFY_PATH: {UPAY_NOTIFY_PATH}")
 if AI_REVIEW_ENABLED:
     logger.info(f"  - AI_REVIEW_MODEL: {AI_REVIEW_MODEL}")
     logger.info(f"  - AI_REVIEW_CHANNEL_TOPIC: {AI_REVIEW_CHANNEL_TOPIC}")

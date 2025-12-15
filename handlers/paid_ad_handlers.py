@@ -1,0 +1,217 @@
+"""
+付费广告（/ad）与购买回调处理
+"""
+import io
+import logging
+import time
+from datetime import datetime
+from typing import Optional
+
+from telegram import InputFile, Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import CallbackContext, ConversationHandler
+
+from config.settings import PAID_AD_CURRENCY, PAID_AD_ENABLED, UPAY_ALLOWED_TYPES, UPAY_DEFAULT_TYPE
+from handlers.mode_selection import submit
+from utils.blacklist import is_blacklisted
+from utils.qr_code import make_qr_png_bytes
+from utils.paid_ad_service import (
+    confirm_paid_by_trade_id,
+    create_order_for_package,
+    get_balance,
+    get_packages,
+)
+
+logger = logging.getLogger(__name__)
+
+
+async def ad(update: Update, context: CallbackContext) -> int:
+    """
+    /ad：进入广告发布流程（跳过 AI/人工审核，但仍保留黑名单等前置校验）
+    """
+    if not PAID_AD_ENABLED:
+        await update.message.reply_text("❌ 付费广告功能未开启")
+        return ConversationHandler.END
+
+    user_id = update.effective_user.id
+    if is_blacklisted(user_id):
+        await update.message.reply_text("⚠️ 您已被列入黑名单，无法使用广告发布功能。如有疑问，请联系管理员。")
+        return ConversationHandler.END
+
+    balance = await get_balance(user_id)
+    if balance < 1:
+        await update.message.reply_text(
+            "📢 广告发布次数不足，请先购买。\n\n"
+            "点击下方按钮选择套餐：",
+            reply_markup=_build_packages_keyboard(),
+        )
+        return ConversationHandler.END
+
+    context.user_data["paid_ad"] = True
+    await update.message.reply_text(
+        f"📢 进入广告发布模式：发布成功将扣减 1 次（当前余额 {balance} 次）。\n"
+        "该模式会跳过 AI/人工审核。",
+    )
+    return await submit(update, context)
+
+
+async def ad_balance(update: Update, context: CallbackContext) -> None:
+    if not PAID_AD_ENABLED:
+        await update.message.reply_text("❌ 付费广告功能未开启")
+        return
+    user_id = update.effective_user.id
+    balance = await get_balance(user_id)
+    await update.message.reply_text(f"📢 当前广告发布余额：{balance} 次")
+
+
+def _build_packages_keyboard() -> InlineKeyboardMarkup:
+    packages = get_packages()
+    if not packages:
+        return InlineKeyboardMarkup([[InlineKeyboardButton("暂无可用套餐", callback_data="paid_ad_noop")]])
+
+    rows = []
+    for p in packages:
+        rows.append([InlineKeyboardButton(
+            f"购买 {p.credits} 次 - {p.amount} {PAID_AD_CURRENCY}",
+            callback_data=f"paid_ad_buy_{p.sku_id}",
+        )])
+
+    if UPAY_ALLOWED_TYPES:
+        rows.append([InlineKeyboardButton(f"币种：{UPAY_DEFAULT_TYPE}", callback_data="paid_ad_types")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def handle_paid_ad_callback(update: Update, context: CallbackContext) -> Optional[int]:
+    """
+    paid_ad_* 回调统一入口（由 handlers/callback_handlers.py 分发）
+    """
+    query = update.callback_query
+    data = query.data
+    user_id = update.effective_user.id
+
+    if not PAID_AD_ENABLED:
+        await query.edit_message_text("❌ 付费广告功能未开启")
+        return ConversationHandler.END
+
+    if data == "paid_ad_balance":
+        balance = await get_balance(user_id)
+        await query.edit_message_text(
+            f"📢 当前广告发布余额：{balance} 次",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("购买广告次数", callback_data="paid_ad_buy_menu")]]),
+        )
+        return None
+
+    if data == "paid_ad_buy_menu":
+        await query.edit_message_text("请选择套餐：", reply_markup=_build_packages_keyboard())
+        return None
+
+    if data == "paid_ad_types":
+        types_str = ", ".join(UPAY_ALLOWED_TYPES) if UPAY_ALLOWED_TYPES else UPAY_DEFAULT_TYPE
+        await query.answer(f"支持币种：{types_str}", show_alert=True)
+        return None
+
+    if data == "paid_ad_howto":
+        await query.answer("请发送 /ad 进入广告发布流程（发布成功扣减 1 次）。", show_alert=True)
+        return None
+
+    if data.startswith("paid_ad_buy_"):
+        sku_id = data.replace("paid_ad_buy_", "", 1)
+        try:
+            order = await create_order_for_package(user_id=user_id, sku_id=sku_id)
+        except Exception as e:
+            logger.error(f"创建广告购买订单失败: {e}", exc_info=True)
+            await query.edit_message_text(f"❌ 创建订单失败：{e}")
+            return None
+
+        out_trade_no = order["out_trade_no"]
+        payment_url = order.get("payment_url")
+        pkg = order["package"]
+        trade_id = order.get("trade_id")
+        pay_type = order.get("pay_type")
+        pay_amount = order.get("pay_amount")
+        pay_address = order.get("pay_address")
+        expires_at = order.get("expires_at")
+
+        rows = []
+        if payment_url:
+            rows.append([InlineKeyboardButton("打开支付页", url=str(payment_url))])
+        rows.append([InlineKeyboardButton("我已支付（查单确认）", callback_data=f"paid_ad_check_{out_trade_no}")])
+        rows.append([InlineKeyboardButton("查看余额", callback_data="paid_ad_balance")])
+
+        await query.edit_message_text(
+            "🧾 订单已创建\n\n"
+            f"订单号：{out_trade_no}\n"
+            f"套餐：{pkg.credits} 次 - {pkg.amount} {PAID_AD_CURRENCY}\n\n"
+            "完成支付后，可点击“我已支付”进行确认入账（回调延迟/丢失时可用）。",
+            reply_markup=InlineKeyboardMarkup(rows),
+        )
+
+        # 额外发送“收款信息 + 二维码”，让用户无需打开网页也能完成支付（保留打开支付页按钮兜底）
+        chat_id = update.effective_chat.id if update.effective_chat else None
+        if chat_id and pay_address and pay_amount:
+            expires_text = ""
+            if isinstance(expires_at, (int, float)) and expires_at > 0:
+                try:
+                    expires_text = datetime.fromtimestamp(float(expires_at)).strftime("%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    expires_text = ""
+
+            remaining_minutes_text = None
+            if isinstance(expires_at, (int, float)) and expires_at > 0:
+                remaining_seconds = float(expires_at) - time.time()
+                if remaining_seconds > 0:
+                    remaining_minutes_text = f"有效期：约 {int(remaining_seconds // 60)} 分钟"
+
+            caption_lines = [
+                "💳 收款信息",
+                f"订单号：{out_trade_no}",
+                f"网关单号：{trade_id}" if trade_id else None,
+                f"币种/网络：{pay_type}" if pay_type else None,
+                f"应付金额：{pay_amount}（请严格按此金额支付）",
+                f"收款地址：{pay_address}",
+                f"有效期至：{expires_text}" if expires_text else remaining_minutes_text,
+                "如无法扫码或复制，请点击“打开支付页”。",
+            ]
+            caption = "\n".join([x for x in caption_lines if x])
+
+            try:
+                qr_png = make_qr_png_bytes(pay_address)
+                f = io.BytesIO(qr_png)
+                f.name = "payment_qr.png"
+                await context.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=InputFile(f),
+                    caption=caption,
+                    reply_markup=InlineKeyboardMarkup(rows),
+                )
+            except Exception as e:
+                logger.warning(f"发送收款二维码失败，将降级为纯文字提示: {e}", exc_info=True)
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=caption,
+                    reply_markup=InlineKeyboardMarkup(rows),
+                    disable_web_page_preview=True,
+                )
+        return None
+
+    if data.startswith("paid_ad_check_"):
+        out_trade_no = data.replace("paid_ad_check_", "", 1)
+        try:
+            ok = await confirm_paid_by_trade_id(out_trade_no)
+        except Exception as e:
+            logger.error(f"查单确认失败: {e}", exc_info=True)
+            await query.edit_message_text(f"❌ 查单失败：{e}")
+            return None
+
+        if ok:
+            balance = await get_balance(user_id)
+            await query.edit_message_text(f"✅ 支付确认成功，已入账。\n\n当前余额：{balance} 次")
+        else:
+            await query.edit_message_text("⏳ 暂未确认到支付成功（可能仍在链上确认或未完成支付）。\n\n请稍后再试。")
+        return None
+
+    if data == "paid_ad_noop":
+        await query.answer("暂无可用套餐", show_alert=True)
+        return None
+
+    await query.edit_message_text("❌ 未知操作")
+    return None
