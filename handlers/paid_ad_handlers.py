@@ -7,7 +7,7 @@ import time
 from datetime import datetime
 from typing import Optional
 
-from telegram import InputFile, Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import CopyTextButton, InputFile, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CallbackContext, ConversationHandler
 
 from config.settings import PAID_AD_CURRENCY, PAID_AD_ENABLED, UPAY_ALLOWED_TYPES, UPAY_DEFAULT_TYPE
@@ -134,6 +134,10 @@ async def handle_paid_ad_callback(update: Update, context: CallbackContext) -> O
         rows = []
         if payment_url:
             rows.append([InlineKeyboardButton("打开支付页", url=str(payment_url))])
+        if pay_address:
+            rows.append([InlineKeyboardButton("复制收款地址", copy_text=CopyTextButton(str(pay_address)))])
+        if pay_amount is not None:
+            rows.append([InlineKeyboardButton("复制应付金额", copy_text=CopyTextButton(str(pay_amount)))])
         rows.append([InlineKeyboardButton("我已支付（查单确认）", callback_data=f"paid_ad_check_{out_trade_no}")])
         rows.append([InlineKeyboardButton("查看余额", callback_data="paid_ad_balance")])
 
@@ -141,7 +145,8 @@ async def handle_paid_ad_callback(update: Update, context: CallbackContext) -> O
             "🧾 订单已创建\n\n"
             f"订单号：{out_trade_no}\n"
             f"套餐：{pkg.credits} 次 - {pkg.amount} {PAID_AD_CURRENCY}\n\n"
-            "完成支付后，可点击“我已支付”进行确认入账（回调延迟/丢失时可用）。",
+            "完成支付后，可点击“我已支付”进行确认入账（回调延迟/丢失时可用）。\n"
+            "可使用下方按钮一键复制收款地址/应付金额。",
             reply_markup=InlineKeyboardMarkup(rows),
         )
 
@@ -169,7 +174,7 @@ async def handle_paid_ad_callback(update: Update, context: CallbackContext) -> O
                 f"应付金额：{pay_amount}（请严格按此金额支付）",
                 f"收款地址：{pay_address}",
                 f"有效期至：{expires_text}" if expires_text else remaining_minutes_text,
-                "如无法扫码或复制，请点击“打开支付页”。",
+                "建议使用下方按钮一键复制地址/金额；如无法扫码，请点击“打开支付页”。",
             ]
             caption = "\n".join([x for x in caption_lines if x])
 
