@@ -2,12 +2,14 @@
 付费广告（/ad）与购买回调处理
 """
 import io
+import html
 import logging
 import time
 from datetime import datetime
 from typing import Optional
 
 from telegram import CopyTextButton, InputFile, Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.constants import ParseMode
 from telegram.ext import CallbackContext, ConversationHandler
 
 from config.settings import PAID_AD_CURRENCY, PAID_AD_ENABLED, UPAY_ALLOWED_TYPES, UPAY_DEFAULT_TYPE
@@ -22,6 +24,10 @@ from utils.paid_ad_service import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _as_html_code(value: object) -> str:
+    return f"<code>{html.escape(str(value))}</code>"
 
 
 async def ad(update: Update, context: CallbackContext) -> int:
@@ -141,12 +147,23 @@ async def handle_paid_ad_callback(update: Update, context: CallbackContext) -> O
         rows.append([InlineKeyboardButton("我已支付（查单确认）", callback_data=f"paid_ad_check_{out_trade_no}")])
         rows.append([InlineKeyboardButton("查看余额", callback_data="paid_ad_balance")])
 
+        pay_amount_line = None
+        if pay_amount is not None:
+            pay_amount_line = f"应付金额：{_as_html_code(pay_amount)}（请严格按此金额支付）"
+        pay_address_line = None
+        if pay_address:
+            pay_address_line = f"收款地址：{_as_html_code(pay_address)}"
+
         await query.edit_message_text(
             "🧾 订单已创建\n\n"
             f"订单号：{out_trade_no}\n"
             f"套餐：{pkg.credits} 次 - {pkg.amount} {PAID_AD_CURRENCY}\n\n"
-            "完成支付后，可点击“我已支付”进行确认入账（回调延迟/丢失时可用）。\n"
+            + (f"{pay_amount_line}\n" if pay_amount_line else "")
+            + (f"{pay_address_line}\n\n" if pay_address_line else "\n")
+            + "完成支付后，可点击“我已支付”进行确认入账（回调延迟/丢失时可用）。\n"
             "可使用下方按钮一键复制收款地址/应付金额。",
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
             reply_markup=InlineKeyboardMarkup(rows),
         )
 
@@ -171,8 +188,8 @@ async def handle_paid_ad_callback(update: Update, context: CallbackContext) -> O
                 f"订单号：{out_trade_no}",
                 f"网关单号：{trade_id}" if trade_id else None,
                 f"币种/网络：{pay_type}" if pay_type else None,
-                f"应付金额：{pay_amount}（请严格按此金额支付）",
-                f"收款地址：{pay_address}",
+                f"应付金额：{_as_html_code(pay_amount)}（请严格按此金额支付）",
+                f"收款地址：{_as_html_code(pay_address)}",
                 f"有效期至：{expires_text}" if expires_text else remaining_minutes_text,
                 "建议使用下方按钮一键复制地址/金额；如无法扫码，请点击“打开支付页”。",
             ]
@@ -186,6 +203,7 @@ async def handle_paid_ad_callback(update: Update, context: CallbackContext) -> O
                     chat_id=chat_id,
                     photo=InputFile(f),
                     caption=caption,
+                    parse_mode=ParseMode.HTML,
                     reply_markup=InlineKeyboardMarkup(rows),
                 )
             except Exception as e:
@@ -193,6 +211,7 @@ async def handle_paid_ad_callback(update: Update, context: CallbackContext) -> O
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text=caption,
+                    parse_mode=ParseMode.HTML,
                     reply_markup=InlineKeyboardMarkup(rows),
                     disable_web_page_preview=True,
                 )
