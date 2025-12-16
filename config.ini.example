@@ -2,6 +2,9 @@
 # Telegram Bot Token (从 @BotFather 获取)
 TOKEN = your_bot_token_here
 
+# 机器人用户名（用于生成购买深链，不要带 @）
+# USERNAME = your_bot_username
+
 # 频道 ID (格式: @channel_username 或 -100xxxxxxxxxx)
 CHANNEL_ID = @your_channel
 
@@ -158,6 +161,27 @@ UPAY_REDIRECT_PATH = /pay/return
 
 # 订单过期（分钟）
 PAY_EXPIRE_MINUTES = 30
+
+[ADMIN_WEB]
+# Web 管理后台（固定 token 登录）
+ENABLED = false
+PATH = /admin
+
+# 固定访问 token（建议使用随机长字符串，支持多个 token 用逗号分隔）
+# TOKEN =
+# TOKENS = token1,token2
+
+[SLOT_AD]
+# 按钮广告位（slot_1..slot_10）配置
+
+# 是否启用按钮广告位
+ENABLED = false
+
+# 租期套餐（天数:金额），逗号分隔
+PLANS = 31:10,62:18
+
+# 币种展示（默认复用 PAID_AD.CURRENCY）
+# CURRENCY = USDT
 
 [DUPLICATE_CHECK]
 # 重复投稿检测配置

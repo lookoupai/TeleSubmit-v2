@@ -115,6 +115,8 @@ class WebhookServer:
     async def start(self):
         """启动 Webhook 服务器"""
         self.web_app = web.Application()
+        # 让额外路由可访问 telegram Application（用于管理后台等）
+        self.web_app["tg_application"] = self.application
         
         # 注册路由
         self.web_app.router.add_post(self.path, self.webhook_handler)

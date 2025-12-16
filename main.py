@@ -29,7 +29,8 @@ from config.settings import (
     TOKEN, TIMEOUT, BOT_MODE, MODE_MEDIA, MODE_DOCUMENT, MODE_MIXED, MODE_TEXT, MODE_ALL,
     RUN_MODE, WEBHOOK_URL, WEBHOOK_PORT, WEBHOOK_PATH, WEBHOOK_SECRET_TOKEN,
     CHANNEL_ID, AI_REVIEW_ENABLED, DUPLICATE_CHECK_ENABLED,
-    PAID_AD_ENABLED, UPAY_NOTIFY_PATH
+    PAID_AD_ENABLED, SLOT_AD_ENABLED, UPAY_NOTIFY_PATH,
+    ADMIN_WEB_ENABLED, ADMIN_WEB_PATH
 )
 from models.state import STATE
 
@@ -85,6 +86,21 @@ from handlers.review_handlers import handle_review_callback
 # 付费广告
 from handlers.paid_ad_handlers import ad as paid_ad, ad_balance as paid_ad_balance
 from handlers.paid_ad_notify import upay_notify
+from handlers.admin_web import build_admin_routes
+from handlers.slot_ad_handlers import (
+    handle_slot_text_input,
+    sched_daily,
+    sched_delete_prev,
+    sched_every_hours,
+    sched_off,
+    sched_on,
+    sched_pin,
+    sched_set_text,
+    sched_status,
+    slot_clear_default_cmd,
+    slot_set_default_cmd,
+    slot_terminate_cmd,
+)
 
 # 错误处理
 from handlers.error_handler import error_handler
@@ -114,6 +130,8 @@ from handlers.index_handlers import (
 # 搜索引擎
 from utils.search_engine import init_search_engine
 from utils.index_manager import auto_rebuild_index_if_needed
+from utils.scheduled_publish_service import scheduled_publish_tick
+from utils.slot_ad_service import send_due_reminders
 
 # 设置日志
 logger = logging.getLogger(__name__)
@@ -378,8 +396,10 @@ async def main():
         
         # 创建并启动 Webhook 服务器（包含健康检查）
         extra_routes = []
-        if PAID_AD_ENABLED:
+        if PAID_AD_ENABLED or SLOT_AD_ENABLED:
             extra_routes.append(("POST", UPAY_NOTIFY_PATH, upay_notify))
+        if ADMIN_WEB_ENABLED:
+            extra_routes.extend(build_admin_routes())
         webhook_server = WebhookServer(
             application=application,
             port=WEBHOOK_PORT,
@@ -519,6 +539,24 @@ def setup_application(application):
     application.add_handler(CommandHandler("settings", settings))
     application.add_handler(CommandHandler("ad_balance", paid_ad_balance))
     application.add_handler(CommandHandler("blacklist", manage_blacklist), group=1)
+
+    # Slot Ads / 定时发布（管理员命令 + 私聊输入承接）
+    application.add_handler(CommandHandler("sched_status", sched_status))
+    application.add_handler(CommandHandler("sched_on", sched_on))
+    application.add_handler(CommandHandler("sched_off", sched_off))
+    application.add_handler(CommandHandler("sched_pin", sched_pin))
+    application.add_handler(CommandHandler("sched_delete_prev", sched_delete_prev))
+    application.add_handler(CommandHandler("sched_set_text", sched_set_text))
+    application.add_handler(CommandHandler("sched_daily", sched_daily))
+    application.add_handler(CommandHandler("sched_every_hours", sched_every_hours))
+    application.add_handler(CommandHandler("slot_set_default", slot_set_default_cmd))
+    application.add_handler(CommandHandler("slot_clear_default", slot_clear_default_cmd))
+    application.add_handler(CommandHandler("slot_terminate", slot_terminate_cmd))
+
+    application.add_handler(
+        MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_slot_text_input),
+        group=1,
+    )
     
     # 注册统计和搜索命令处理器
     application.add_handler(CommandHandler("hot", get_hot_posts))
@@ -672,6 +710,12 @@ def setup_application(application):
             interval=1800,  # 30分钟
             first=300  # 启动后5分钟开始第一次检查
         )
+
+        # 定时发布：每 30 秒 tick 一次（配置在 DB，可热更新）
+        job_queue.run_repeating(scheduled_publish_tick, interval=30, first=15)
+
+        # Slot Ads 到期提醒：每 60 秒检查一次（默认关闭，用户 opt-in）
+        job_queue.run_repeating(send_due_reminders, interval=60, first=30)
         logger.info("定期任务设置完成（包括统计数据更新和删除消息检查）")
     except Exception as e:
         logger.error(f"设置定期任务失败: {e}", exc_info=True)

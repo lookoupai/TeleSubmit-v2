@@ -16,6 +16,7 @@ from database.db_manager import get_db, cleanup_old_data
 from utils.blacklist import is_blacklisted
 from ui.keyboards import Keyboards
 from handlers.text_handlers import show_text_welcome
+from handlers.slot_ad_handlers import try_handle_start_args
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +171,14 @@ async def start(update: Update, context: CallbackContext) -> int:
         logger.warning(f"黑名单用户尝试使用机器人，user_id: {user_id}")
         await update.message.reply_text("⚠️ 您已被列入黑名单，无法使用投稿功能。如有疑问，请联系管理员。")
         return ConversationHandler.END
+
+    # /start 深链（如 buy_slot_x）优先处理
+    try:
+        handled = await try_handle_start_args(update, context)
+        if handled:
+            return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"处理 /start 深链失败: {e}", exc_info=True)
     
     # 显示欢迎信息和可用操作
     welcome_message = f"👋 你好 {username}！欢迎使用投稿机器人！\n\n"

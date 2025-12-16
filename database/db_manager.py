@@ -327,6 +327,105 @@ async def init_db():
             ''')
             await conn.execute('CREATE INDEX IF NOT EXISTS idx_ad_ledger_user_id ON ad_credit_ledger(user_id)')
 
+            # ============================================
+            # 定时发布（Scheduled Publish）配置
+            # ============================================
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS scheduled_publish_config (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    schedule_type TEXT NOT NULL DEFAULT 'daily_at',
+                    schedule_payload TEXT NOT NULL DEFAULT '{}',
+                    message_text TEXT NOT NULL DEFAULT '',
+                    auto_pin INTEGER NOT NULL DEFAULT 0,
+                    delete_prev INTEGER NOT NULL DEFAULT 0,
+                    next_run_at REAL,
+                    last_run_at REAL,
+                    last_message_chat_id INTEGER,
+                    last_message_id INTEGER,
+                    updated_at REAL
+                )
+            """)
+            # 兼容迁移：为旧库补齐新字段
+            try:
+                await conn.execute("ALTER TABLE scheduled_publish_config ADD COLUMN auto_pin INTEGER NOT NULL DEFAULT 0")
+                logger.info("已添加 auto_pin 字段到 scheduled_publish_config 表")
+            except Exception:
+                pass
+            try:
+                await conn.execute("ALTER TABLE scheduled_publish_config ADD COLUMN delete_prev INTEGER NOT NULL DEFAULT 0")
+                logger.info("已添加 delete_prev 字段到 scheduled_publish_config 表")
+            except Exception:
+                pass
+            await conn.execute("""
+                INSERT OR IGNORE INTO scheduled_publish_config(id, enabled, schedule_type, schedule_payload, message_text, updated_at)
+                VALUES (1, 0, 'daily_at', '{}', '', strftime('%s', 'now'))
+            """)
+
+            # ============================================
+            # 按钮广告位（Slot Ads）
+            # ============================================
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS ad_slots (
+                    slot_id INTEGER PRIMARY KEY,
+                    default_text TEXT,
+                    default_url TEXT,
+                    sell_enabled INTEGER NOT NULL DEFAULT 1,
+                    updated_at REAL
+                )
+            """)
+            # 固定 10 个 slot（1..10）
+            for slot_id in range(1, 11):
+                await conn.execute(
+                    "INSERT OR IGNORE INTO ad_slots(slot_id, sell_enabled, updated_at) VALUES (?, 1, strftime('%s','now'))",
+                    (slot_id,),
+                )
+
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS slot_ad_creatives (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    button_text TEXT NOT NULL,
+                    button_url TEXT NOT NULL,
+                    ai_review_result TEXT,
+                    ai_review_passed INTEGER,
+                    created_at REAL NOT NULL
+                )
+            """)
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_slot_ad_creatives_user_id ON slot_ad_creatives(user_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_slot_ad_creatives_created_at ON slot_ad_creatives(created_at)")
+
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS slot_ad_orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    out_trade_no TEXT UNIQUE,
+                    slot_id INTEGER NOT NULL,
+                    buyer_user_id INTEGER NOT NULL,
+                    creative_id INTEGER NOT NULL,
+                    plan_days INTEGER NOT NULL,
+                    amount TEXT,
+                    currency TEXT,
+                    status TEXT NOT NULL,
+                    upay_trade_id TEXT,
+                    payment_url TEXT,
+                    expires_at REAL,
+                    start_at REAL,
+                    end_at REAL,
+                    created_at REAL NOT NULL,
+                    paid_at REAL,
+                    terminated_at REAL,
+                    terminate_reason TEXT,
+                    reminder_opt_in INTEGER NOT NULL DEFAULT 0,
+                    remind_at REAL,
+                    remind_sent INTEGER NOT NULL DEFAULT 0,
+                    remind_sent_at REAL
+                )
+            """)
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_slot_ad_orders_slot_status ON slot_ad_orders(slot_id, status)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_slot_ad_orders_slot_time ON slot_ad_orders(slot_id, start_at, end_at)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_slot_ad_orders_buyer_status ON slot_ad_orders(buyer_user_id, status)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_slot_ad_orders_remind ON slot_ad_orders(remind_at, remind_sent)")
+
             await conn.commit()
             logger.info("数据库初始化完成")
     except Exception as e:

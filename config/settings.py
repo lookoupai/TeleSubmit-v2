@@ -416,6 +416,86 @@ UPAY_REDIRECT_PATH = (get_env_or_config('UPAY_REDIRECT_PATH', 'PAID_AD', 'UPAY_R
 _pay_expire_minutes = get_env_or_config('PAY_EXPIRE_MINUTES', 'PAID_AD', 'PAY_EXPIRE_MINUTES')
 PAY_EXPIRE_MINUTES = int(_pay_expire_minutes) if _pay_expire_minutes else get_config_int('PAID_AD', 'PAY_EXPIRE_MINUTES', 30)
 
+# ============================================
+# 按钮广告位（Slot Ads）配置
+# ============================================
+BOT_USERNAME = (get_env_or_config('BOT_USERNAME', 'BOT', 'USERNAME', fallback='') or '').strip().lstrip('@')
+
+_slot_ad_enabled_env = os.getenv('SLOT_AD_ENABLED')
+if _slot_ad_enabled_env is not None:
+    SLOT_AD_ENABLED = _slot_ad_enabled_env.lower() in ('true', '1', 'yes')
+else:
+    SLOT_AD_ENABLED = get_config_bool('SLOT_AD', 'ENABLED', False)
+
+SLOT_AD_CURRENCY = (get_env_or_config('SLOT_AD_CURRENCY', 'SLOT_AD', 'CURRENCY', fallback=PAID_AD_CURRENCY) or PAID_AD_CURRENCY).strip()
+SLOT_AD_SLOT_COUNT = get_config_int('SLOT_AD', 'SLOT_COUNT', 10)
+SLOT_AD_RENEW_PROTECT_DAYS = get_config_int('SLOT_AD', 'RENEW_PROTECT_DAYS', 7)
+SLOT_AD_BUTTON_TEXT_MAX_LEN = get_config_int('SLOT_AD', 'BUTTON_TEXT_MAX_LEN', 20)
+SLOT_AD_URL_MAX_LEN = get_config_int('SLOT_AD', 'URL_MAX_LEN', 512)
+SLOT_AD_REMINDER_ADVANCE_DAYS = get_config_int('SLOT_AD', 'REMINDER_ADVANCE_DAYS', 1)
+
+SLOT_AD_PLANS_RAW = (get_env_or_config('SLOT_AD_PLANS', 'SLOT_AD', 'PLANS', fallback='31:10,62:18') or '').strip()
+
+def _parse_slot_ad_plans(raw: str):
+    """
+    解析套餐配置：天数:金额，逗号分隔
+    例如：31:10,62:18
+    """
+    plans = []
+    if not raw:
+        return plans
+    parts = [p.strip() for p in raw.split(',') if p.strip()]
+    for idx, part in enumerate(parts):
+        if ':' not in part:
+            logger.warning(f"SLOT_AD.PLANS 配置无效（缺少冒号）: {part}")
+            continue
+        days_str, amount_str = [x.strip() for x in part.split(':', 1)]
+        try:
+            days = int(days_str)
+        except (ValueError, TypeError):
+            logger.warning(f"SLOT_AD.PLANS 天数无效: {part}")
+            continue
+        if days <= 0:
+            logger.warning(f"SLOT_AD.PLANS 天数必须>0: {part}")
+            continue
+        try:
+            amount = Decimal(amount_str)
+        except (InvalidOperation, ValueError, TypeError):
+            logger.warning(f"SLOT_AD.PLANS 金额无效: {part}")
+            continue
+        if amount <= 0:
+            logger.warning(f"SLOT_AD.PLANS 金额必须>0: {part}")
+            continue
+        sku_id = f"d{days}"
+        plans.append({
+            'sku_id': sku_id,
+            'days': days,
+            'amount': amount,
+        })
+    plans.sort(key=lambda x: int(x["days"]))
+    return plans
+
+SLOT_AD_PLANS = _parse_slot_ad_plans(SLOT_AD_PLANS_RAW)
+
+# ============================================
+# Web 管理后台（Admin Web）配置
+# ============================================
+_admin_web_enabled_env = os.getenv('ADMIN_WEB_ENABLED')
+if _admin_web_enabled_env is not None:
+    ADMIN_WEB_ENABLED = _admin_web_enabled_env.lower() in ('true', '1', 'yes')
+else:
+    ADMIN_WEB_ENABLED = get_config_bool('ADMIN_WEB', 'ENABLED', False)
+
+ADMIN_WEB_PATH = (get_env_or_config('ADMIN_WEB_PATH', 'ADMIN_WEB', 'PATH', fallback='/admin') or '/admin').strip()
+if not ADMIN_WEB_PATH.startswith('/'):
+    ADMIN_WEB_PATH = '/' + ADMIN_WEB_PATH
+ADMIN_WEB_TITLE = (get_env_or_config('ADMIN_WEB_TITLE', 'ADMIN_WEB', 'TITLE', fallback='TeleSubmit 管理后台') or 'TeleSubmit 管理后台').strip()
+
+_admin_web_tokens_raw = (get_env_or_config('ADMIN_WEB_TOKENS', 'ADMIN_WEB', 'TOKENS', fallback='') or '').strip()
+if not _admin_web_tokens_raw:
+    _admin_web_tokens_raw = (get_env_or_config('ADMIN_WEB_TOKEN', 'ADMIN_WEB', 'TOKEN', fallback='') or '').strip()
+ADMIN_WEB_TOKENS = [t.strip() for t in _admin_web_tokens_raw.split(',') if t.strip()]
+
 # 自定义按钮配置（InlineKeyboard 按行配置）
 CUSTOM_BUTTON_ROWS = []
 try:
@@ -468,6 +548,8 @@ logger.info(f"  - AI_REVIEW_ENABLED: {AI_REVIEW_ENABLED}")
 logger.info(f"  - DUPLICATE_CHECK_ENABLED: {DUPLICATE_CHECK_ENABLED}")
 logger.info(f"  - RATING_ENABLED: {RATING_ENABLED}")
 logger.info(f"  - PAID_AD_ENABLED: {PAID_AD_ENABLED}")
+logger.info(f"  - SLOT_AD_ENABLED: {SLOT_AD_ENABLED}")
+logger.info(f"  - ADMIN_WEB_ENABLED: {ADMIN_WEB_ENABLED}")
 if PAID_AD_ENABLED:
     logger.info(f"  - PAID_AD_PACKAGES: {[(p['credits'], str(p['amount'])) for p in PAID_AD_PACKAGES] if PAID_AD_PACKAGES else '未配置'}")
     logger.info(f"  - PAID_AD_CURRENCY: {PAID_AD_CURRENCY}")

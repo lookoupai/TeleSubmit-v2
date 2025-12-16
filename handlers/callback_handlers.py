@@ -17,6 +17,7 @@ from handlers.stats_handlers import get_hot_posts, update_post_stats
 from handlers.search_handlers import search_posts_by_tag
 from handlers.rating_handlers import handle_rating_callback
 from handlers.paid_ad_handlers import handle_paid_ad_callback
+from handlers.slot_ad_handlers import handle_slot_callback
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +31,6 @@ async def handle_callback_query(update: Update, context: CallbackContext):
         context: 回调上下文
     """
     query = update.callback_query
-    await query.answer()  # 确认接收到回调
-    
     data = query.data
     user_id = update.effective_user.id
     
@@ -41,6 +40,9 @@ async def handle_callback_query(update: Update, context: CallbackContext):
         # 评分相关
         if data.startswith("rating_"):
             await handle_rating_callback(update, context)
+        # Slot Ads / 定时发布相关
+        elif data.startswith("slot_"):
+            await handle_slot_callback(update, context)
         # 付费广告
         elif data.startswith("paid_ad_"):
             await handle_paid_ad_callback(update, context)
@@ -113,19 +115,18 @@ async def handle_callback_query(update: Update, context: CallbackContext):
         # 分页
         elif data.startswith("page_"):
             await handle_pagination(update, context)
-        
         # 确认/取消操作
         elif data.startswith("confirm_"):
             await handle_confirm_action(update, context)
         elif data.startswith("cancel_"):
             await handle_cancel_action(update, context)
-        
+
         # 返回主菜单
         elif data == "back_main":
             await handle_back_to_main(update, context)
         elif data == "back":
             await handle_back(update, context)
-        
+
         else:
             await query.edit_message_text("❌ 未知操作")
             
@@ -136,6 +137,13 @@ async def handle_callback_query(update: Update, context: CallbackContext):
                 MessageFormatter.error_message("general")
             )
         except:
+            pass
+    finally:
+        # 兜底：若子处理器未显式 answer，避免用户端一直转圈。
+        # 若已 answer（尤其是带 show_alert 的），此处可能抛错，吞掉即可。
+        try:
+            await query.answer()
+        except Exception:
             pass
 
 

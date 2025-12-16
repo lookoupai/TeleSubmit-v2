@@ -30,6 +30,25 @@ def _as_html_code(value: object) -> str:
     return f"<code>{html.escape(str(value))}</code>"
 
 
+def _get_selected_pay_type(context: CallbackContext) -> str:
+    selected = str((context.user_data or {}).get("paid_ad_pay_type") or "").strip()
+    if selected and selected in (UPAY_ALLOWED_TYPES or []):
+        return selected
+    return UPAY_DEFAULT_TYPE
+
+
+def _build_types_keyboard(*, current_type: str) -> InlineKeyboardMarkup:
+    types = UPAY_ALLOWED_TYPES or []
+    if not types:
+        return InlineKeyboardMarkup([[InlineKeyboardButton("暂无可选币种", callback_data="paid_ad_buy_menu")]])
+
+    rows = []
+    for t in types:
+        label = f"✅ {t}" if t == current_type else str(t)
+        rows.append([InlineKeyboardButton(label, callback_data=f"paid_ad_set_type_{t}")])
+    rows.append([InlineKeyboardButton("🔙 返回套餐", callback_data="paid_ad_buy_menu")])
+    return InlineKeyboardMarkup(rows)
+
 async def ad(update: Update, context: CallbackContext) -> int:
     """
     /ad：进入广告发布流程（跳过 AI/人工审核，但仍保留黑名单等前置校验）
@@ -48,7 +67,7 @@ async def ad(update: Update, context: CallbackContext) -> int:
         await update.message.reply_text(
             "📢 广告发布次数不足，请先购买。\n\n"
             "点击下方按钮选择套餐：",
-            reply_markup=_build_packages_keyboard(),
+            reply_markup=_build_packages_keyboard(current_type=_get_selected_pay_type(context)),
         )
         return ConversationHandler.END
 
@@ -69,7 +88,10 @@ async def ad_balance(update: Update, context: CallbackContext) -> None:
     await update.message.reply_text(f"📢 当前广告发布余额：{balance} 次")
 
 
-def _build_packages_keyboard() -> InlineKeyboardMarkup:
+def _build_packages_keyboard(*, current_type: str) -> InlineKeyboardMarkup:
+    """
+    购买套餐键盘（带当前币种展示）。
+    """
     packages = get_packages()
     if not packages:
         return InlineKeyboardMarkup([[InlineKeyboardButton("暂无可用套餐", callback_data="paid_ad_noop")]])
@@ -82,7 +104,7 @@ def _build_packages_keyboard() -> InlineKeyboardMarkup:
         )])
 
     if UPAY_ALLOWED_TYPES:
-        rows.append([InlineKeyboardButton(f"币种：{UPAY_DEFAULT_TYPE}", callback_data="paid_ad_types")])
+        rows.append([InlineKeyboardButton(f"币种：{current_type}", callback_data="paid_ad_types")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -107,12 +129,23 @@ async def handle_paid_ad_callback(update: Update, context: CallbackContext) -> O
         return None
 
     if data == "paid_ad_buy_menu":
-        await query.edit_message_text("请选择套餐：", reply_markup=_build_packages_keyboard())
+        current_type = _get_selected_pay_type(context)
+        await query.edit_message_text("请选择套餐：", reply_markup=_build_packages_keyboard(current_type=current_type))
         return None
 
     if data == "paid_ad_types":
-        types_str = ", ".join(UPAY_ALLOWED_TYPES) if UPAY_ALLOWED_TYPES else UPAY_DEFAULT_TYPE
-        await query.answer(f"支持币种：{types_str}", show_alert=True)
+        current_type = _get_selected_pay_type(context)
+        await query.edit_message_text("请选择收款币种/网络：", reply_markup=_build_types_keyboard(current_type=current_type))
+        return None
+
+    if data.startswith("paid_ad_set_type_"):
+        t = data.replace("paid_ad_set_type_", "", 1)
+        if t not in (UPAY_ALLOWED_TYPES or []):
+            await query.answer("❌ 无效币种", show_alert=True)
+            return None
+        context.user_data["paid_ad_pay_type"] = t
+        await query.answer(f"✅ 已切换为 {t}", show_alert=False)
+        await query.edit_message_text("请选择套餐：", reply_markup=_build_packages_keyboard(current_type=t))
         return None
 
     if data == "paid_ad_howto":
@@ -122,7 +155,11 @@ async def handle_paid_ad_callback(update: Update, context: CallbackContext) -> O
     if data.startswith("paid_ad_buy_"):
         sku_id = data.replace("paid_ad_buy_", "", 1)
         try:
-            order = await create_order_for_package(user_id=user_id, sku_id=sku_id)
+            order = await create_order_for_package(
+                user_id=user_id,
+                sku_id=sku_id,
+                pay_type=_get_selected_pay_type(context),
+            )
         except Exception as e:
             logger.error(f"创建广告购买订单失败: {e}", exc_info=True)
             await query.edit_message_text(f"❌ 创建订单失败：{e}")
