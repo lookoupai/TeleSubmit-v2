@@ -428,7 +428,33 @@ else:
     SLOT_AD_ENABLED = get_config_bool('SLOT_AD', 'ENABLED', False)
 
 SLOT_AD_CURRENCY = (get_env_or_config('SLOT_AD_CURRENCY', 'SLOT_AD', 'CURRENCY', fallback=PAID_AD_CURRENCY) or PAID_AD_CURRENCY).strip()
-SLOT_AD_SLOT_COUNT = get_config_int('SLOT_AD', 'SLOT_COUNT', 10)
+_slot_ad_max_rows_raw = get_env_or_config(
+    'SLOT_AD_MAX_ROWS',
+    'SLOT_AD',
+    'MAX_ROWS',
+    fallback=str(get_config_int('SLOT_AD', 'SLOT_COUNT', 20)),
+)
+try:
+    SLOT_AD_MAX_ROWS = max(1, int(str(_slot_ad_max_rows_raw or "").strip()))
+except (ValueError, TypeError):
+    SLOT_AD_MAX_ROWS = 20
+    logger.warning(f"SLOT_AD_MAX_ROWS 配置无效，将使用默认值 20: {_slot_ad_max_rows_raw}")
+
+# 启用行数：用于控制“定时消息下方展示多少行按钮”（默认=MAX_ROWS）
+_slot_ad_active_rows_raw = get_env_or_config(
+    'SLOT_AD_ACTIVE_ROWS_COUNT',
+    'SLOT_AD',
+    'ACTIVE_ROWS_COUNT',
+    fallback=str(SLOT_AD_MAX_ROWS),
+)
+try:
+    SLOT_AD_ACTIVE_ROWS_COUNT = max(0, int(str(_slot_ad_active_rows_raw or "").strip()))
+except (ValueError, TypeError):
+    SLOT_AD_ACTIVE_ROWS_COUNT = int(SLOT_AD_MAX_ROWS)
+    logger.warning(f"SLOT_AD_ACTIVE_ROWS_COUNT 配置无效，将回退为 MAX_ROWS: {_slot_ad_active_rows_raw}")
+
+# 兼容旧命名：历史上 SLOT_COUNT 表示“可用 slot 总数”，现在语义为“最大可用行数”
+SLOT_AD_SLOT_COUNT = int(SLOT_AD_MAX_ROWS)
 SLOT_AD_RENEW_PROTECT_DAYS = get_config_int('SLOT_AD', 'RENEW_PROTECT_DAYS', 7)
 SLOT_AD_BUTTON_TEXT_MAX_LEN = get_config_int('SLOT_AD', 'BUTTON_TEXT_MAX_LEN', 20)
 SLOT_AD_URL_MAX_LEN = get_config_int('SLOT_AD', 'URL_MAX_LEN', 512)

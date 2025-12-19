@@ -293,6 +293,12 @@ async def main():
     
     # 初始化数据库
     await init_db()
+    # 载入运行时配置快照（广告/AI 等热更新项）
+    try:
+        from utils.runtime_settings import refresh as refresh_runtime_settings
+        await refresh_runtime_settings()
+    except Exception as e:
+        logger.warning(f"运行时配置加载失败（可忽略，将使用静态配置）: {e}")
     # 初始化用户会话数据库
     initialize_database()
     # 初始化黑名单

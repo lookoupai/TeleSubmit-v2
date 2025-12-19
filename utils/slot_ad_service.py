@@ -2,7 +2,7 @@
 按钮广告位（Slot Ads）服务
 
 约束（KISS/YAGNI）：
-- 固定 10 个 slot（由数据库初始化写入 1..10）
+- slot 行数可配置（DB 初始化补齐 1..MAX_ROWS，展示为前 N 行）
 - 只实现“当前空位购买 / 到期前 7 天游客不可买但可看可购时间 / 广告主可续期”
 - 轻度风控：按钮文案/URL 基础校验 + 可选 AI 风险审核（儿童/恐怖等）
 """
@@ -26,20 +26,13 @@ from config.settings import (
     ADMIN_IDS,
     BOT_USERNAME,
     PAID_AD_PUBLIC_BASE_URL,
-    PAY_EXPIRE_MINUTES,
-    SLOT_AD_BUTTON_TEXT_MAX_LEN,
-    SLOT_AD_CURRENCY,
-    SLOT_AD_ENABLED,
-    SLOT_AD_PLANS,
-    SLOT_AD_RENEW_PROTECT_DAYS,
-    SLOT_AD_URL_MAX_LEN,
     UPAY_BASE_URL,
-    UPAY_DEFAULT_TYPE,
     UPAY_NOTIFY_PATH,
     UPAY_REDIRECT_PATH,
     UPAY_SECRET_KEY,
 )
 from database.db_manager import get_db
+from utils import runtime_settings
 from utils.upay_pro_client import check_status as upay_check_status
 from utils.upay_pro_client import create_order as upay_create_order
 from utils.upay_pro_client import normalize_amount
@@ -56,8 +49,8 @@ class SlotAdPlan:
 
 def get_plans() -> List[SlotAdPlan]:
     plans: List[SlotAdPlan] = []
-    for p in (SLOT_AD_PLANS or []):
-        plans.append(SlotAdPlan(sku_id=str(p["sku_id"]), days=int(p["days"]), amount=p["amount"]))
+    for p in runtime_settings.slot_ad_plans():
+        plans.append(SlotAdPlan(sku_id=str(p.sku_id), days=int(p.days), amount=p.amount))
     return plans
 
 
@@ -130,8 +123,9 @@ def validate_button_text(text: str) -> str:
         raise ValueError("按钮文案不能为空")
     if "\n" in t or "\r" in t:
         raise ValueError("按钮文案不允许换行")
-    if len(t) > int(SLOT_AD_BUTTON_TEXT_MAX_LEN):
-        raise ValueError(f"按钮文案过长，最多 {SLOT_AD_BUTTON_TEXT_MAX_LEN} 字符")
+    max_len = int(runtime_settings.slot_ad_button_text_max_len())
+    if len(t) > max_len:
+        raise ValueError(f"按钮文案过长，最多 {max_len} 字符")
     return t
 
 
@@ -139,8 +133,9 @@ def validate_button_url(url: str) -> str:
     u = (url or "").strip()
     if not u:
         raise ValueError("链接不能为空")
-    if len(u) > int(SLOT_AD_URL_MAX_LEN):
-        raise ValueError(f"链接过长，最多 {SLOT_AD_URL_MAX_LEN} 字符")
+    max_len = int(runtime_settings.slot_ad_url_max_len())
+    if len(u) > max_len:
+        raise ValueError(f"链接过长，最多 {max_len} 字符")
     parsed = urlparse(u)
     if parsed.scheme.lower() != "https":
         raise ValueError("仅允许 https:// 链接")
@@ -149,28 +144,94 @@ def validate_button_url(url: str) -> str:
     return u
 
 
-async def get_slot_defaults() -> Dict[int, Dict[str, Optional[str]]]:
+def parse_default_buttons_lines(raw: str) -> List[Dict[str, str]]:
+    """
+    解析默认按钮列表（用于后台输入）：
+    - 每行一条：<text> | <https://url>
+    - 空行忽略
+    """
+    out: List[Dict[str, str]] = []
+    lines = [ln.strip() for ln in (raw or "").splitlines()]
+    for ln in lines:
+        if not ln:
+            continue
+        if "|" not in ln:
+            raise ValueError("默认按钮列表格式错误：每行需使用 “文案 | https://链接”")
+        text, url = [x.strip() for x in ln.split("|", 1)]
+        out.append({"text": validate_button_text(text), "url": validate_button_url(url)})
+    return out
+
+
+def _safe_parse_default_buttons_json(raw: Optional[str]) -> List[Dict[str, str]]:
+    if not raw:
+        return []
+    try:
+        data = json.loads(str(raw))
+    except Exception:
+        logger.warning("ad_slots.default_buttons_json 解析失败，将忽略该字段", exc_info=True)
+        return []
+    if not isinstance(data, list):
+        return []
+    out: List[Dict[str, str]] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        text = (item.get("text") or item.get("label") or "").strip()
+        url = (item.get("url") or "").strip()
+        if not text or not url:
+            continue
+        # DB 中的脏数据不应导致渲染失败：这里不做严格校验，只做最小约束
+        out.append({"text": str(text), "url": str(url)})
+    return out
+
+
+async def get_slot_defaults() -> Dict[int, Dict[str, Any]]:
     async with get_db() as conn:
         cursor = await conn.cursor()
-        await cursor.execute("SELECT slot_id, default_text, default_url, sell_enabled FROM ad_slots ORDER BY slot_id")
+        await cursor.execute(
+            "SELECT slot_id, default_text, default_url, default_buttons_json, sell_enabled FROM ad_slots ORDER BY slot_id"
+        )
         rows = await cursor.fetchall()
-        out: Dict[int, Dict[str, Optional[str]]] = {}
+        out: Dict[int, Dict[str, Any]] = {}
         for r in rows:
+            default_buttons = _safe_parse_default_buttons_json(r["default_buttons_json"])
+            if not default_buttons and r["default_text"] and r["default_url"]:
+                default_buttons = [{"text": str(r["default_text"]), "url": str(r["default_url"])}]
             out[int(r["slot_id"])] = {
                 "default_text": r["default_text"],
                 "default_url": r["default_url"],
+                "default_buttons": default_buttons,
                 "sell_enabled": bool(int(r["sell_enabled"])),
             }
         return out
 
 
 async def set_slot_default(slot_id: int, default_text: Optional[str], default_url: Optional[str]) -> None:
+    default_buttons_json = None
+    if default_text and default_url:
+        default_buttons_json = json.dumps([{"text": str(default_text), "url": str(default_url)}], ensure_ascii=False)
     now = time.time()
     async with get_db() as conn:
         cursor = await conn.cursor()
         await cursor.execute(
-            "UPDATE ad_slots SET default_text = ?, default_url = ?, updated_at = ? WHERE slot_id = ?",
-            (default_text, default_url, now, int(slot_id)),
+            "UPDATE ad_slots SET default_text = ?, default_url = ?, default_buttons_json = ?, updated_at = ? WHERE slot_id = ?",
+            (default_text, default_url, default_buttons_json, now, int(slot_id)),
+        )
+
+
+async def set_slot_default_buttons(slot_id: int, default_buttons: List[Dict[str, str]]) -> None:
+    buttons = default_buttons or []
+    first = buttons[0] if buttons else None
+    default_text = (first.get("text") if isinstance(first, dict) else None) if first else None
+    default_url = (first.get("url") if isinstance(first, dict) else None) if first else None
+    default_buttons_json = json.dumps(buttons, ensure_ascii=False) if buttons else None
+
+    now = time.time()
+    async with get_db() as conn:
+        cursor = await conn.cursor()
+        await cursor.execute(
+            "UPDATE ad_slots SET default_text = ?, default_url = ?, default_buttons_json = ?, updated_at = ? WHERE slot_id = ?",
+            (default_text, default_url, default_buttons_json, now, int(slot_id)),
         )
 
 
@@ -319,11 +380,14 @@ def _buy_deeplink(slot_id: int) -> Optional[str]:
 
 def build_channel_keyboard(
     *,
-    slot_defaults: Dict[int, Dict[str, Optional[str]]],
+    slot_defaults: Dict[int, Dict[str, Any]],
     active_orders: Dict[int, Dict[str, Any]],
 ) -> InlineKeyboardMarkup:
     rows: List[List[InlineKeyboardButton]] = []
+    active_rows_count = int(runtime_settings.slot_ad_active_rows_count())
     for slot_id in sorted(slot_defaults.keys()):
+        if active_rows_count >= 0 and int(slot_id) > active_rows_count:
+            break
         active = active_orders.get(int(slot_id))
         if active:
             rows.append([InlineKeyboardButton(str(active["button_text"]), url=str(active["button_url"]))])
@@ -331,12 +395,24 @@ def build_channel_keyboard(
 
         slot = slot_defaults[int(slot_id)]
         sell_enabled = bool(slot.get("sell_enabled"))
+        default_buttons = slot.get("default_buttons") or []
         default_text = slot.get("default_text")
         default_url = slot.get("default_url")
         buy_url = _buy_deeplink(slot_id) if sell_enabled else None
 
         line: List[InlineKeyboardButton] = []
-        if default_text and default_url:
+        if default_buttons:
+            # 预留空间给“购买”按钮，避免超出 Telegram 单行上限
+            max_defaults = 7 if sell_enabled else 8
+            for btn in default_buttons[:max_defaults]:
+                try:
+                    text = str(btn.get("text") or "").strip()
+                    url = str(btn.get("url") or "").strip()
+                    if text and url:
+                        line.append(InlineKeyboardButton(text, url=url))
+                except Exception:
+                    continue
+        elif default_text and default_url:
             line.append(InlineKeyboardButton(str(default_text), url=str(default_url)))
         if sell_enabled:
             buy_label = "购买（独享此行）"
@@ -401,7 +477,7 @@ async def ensure_can_purchase_or_renew(*, slot_id: int, user_id: int, now: Optio
     _, end_at, buyer_user_id = window
     end_at = float(end_at)
     buyer_user_id = int(buyer_user_id)
-    protect_start = end_at - (int(SLOT_AD_RENEW_PROTECT_DAYS) * 86400)
+    protect_start = end_at - (int(runtime_settings.slot_ad_renew_protect_days()) * 86400)
 
     if int(user_id) != buyer_user_id:
         return {
@@ -427,11 +503,14 @@ async def create_slot_ad_payment_order(
     creative_id: int,
     plan_days: int,
     planned_start_at: float,
-    currency: str = SLOT_AD_CURRENCY,
+    currency: str = runtime_settings.slot_ad_currency(),
     pay_type: Optional[str] = None,
 ) -> Dict[str, Any]:
-    if not SLOT_AD_ENABLED:
+    if not runtime_settings.slot_ad_enabled():
         raise ValueError("按钮广告位功能未开启")
+    active_rows_count = int(runtime_settings.slot_ad_active_rows_count())
+    if int(slot_id) <= 0 or int(slot_id) > active_rows_count:
+        raise ValueError(f"该广告位（{int(slot_id)}）当前未启用（启用范围：1..{active_rows_count}）")
     if not UPAY_BASE_URL:
         raise ValueError("UPAY_BASE_URL 未配置")
     if not UPAY_SECRET_KEY:
@@ -445,8 +524,8 @@ async def create_slot_ad_payment_order(
 
     out_trade_no = f"SLT{int(time.time())}{secrets.token_hex(4).upper()}"
     created_at = time.time()
-    expires_at = created_at + (int(PAY_EXPIRE_MINUTES) * 60)
-    type_ = pay_type or UPAY_DEFAULT_TYPE
+    expires_at = created_at + (int(runtime_settings.pay_expire_minutes()) * 60)
+    type_ = pay_type or runtime_settings.upay_default_type()
 
     planned_end_at = float(planned_start_at) + (int(plan.days) * 86400)
 

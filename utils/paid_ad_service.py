@@ -10,18 +10,14 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple, cast
 
 from config.settings import (
-    PAID_AD_CURRENCY,
-    PAID_AD_ENABLED,
-    PAID_AD_PACKAGES,
     PAID_AD_PUBLIC_BASE_URL,
-    PAY_EXPIRE_MINUTES,
     UPAY_BASE_URL,
-    UPAY_DEFAULT_TYPE,
     UPAY_NOTIFY_PATH,
     UPAY_REDIRECT_PATH,
     UPAY_SECRET_KEY,
 )
 from database.db_manager import get_db
+from utils import runtime_settings
 from utils.upay_pro_client import create_order as upay_create_order
 from utils.upay_pro_client import normalize_amount, check_status as upay_check_status
 
@@ -37,8 +33,8 @@ class PaidAdPackage:
 
 def get_packages() -> List[PaidAdPackage]:
     packages: List[PaidAdPackage] = []
-    for p in (PAID_AD_PACKAGES or []):
-        packages.append(PaidAdPackage(sku_id=p["sku_id"], credits=int(p["credits"]), amount=p["amount"]))
+    for p in runtime_settings.paid_ad_packages():
+        packages.append(PaidAdPackage(sku_id=p.sku_id, credits=int(p.credits), amount=p.amount))
     return packages
 
 
@@ -120,7 +116,7 @@ async def create_order_for_package(
     sku_id: str,
     pay_type: Optional[str] = None,
 ) -> Dict[str, Any]:
-    if not PAID_AD_ENABLED:
+    if not runtime_settings.paid_ad_enabled():
         raise ValueError("付费广告功能未启用")
     if not UPAY_BASE_URL:
         raise ValueError("UPAY_BASE_URL 未配置")
@@ -135,8 +131,8 @@ async def create_order_for_package(
 
     out_trade_no = f"AD{int(time.time())}{secrets.token_hex(4).upper()}"
     created_at = time.time()
-    expires_at = created_at + (int(PAY_EXPIRE_MINUTES) * 60)
-    type_ = pay_type or UPAY_DEFAULT_TYPE
+    expires_at = created_at + (int(runtime_settings.pay_expire_minutes()) * 60)
+    type_ = pay_type or runtime_settings.upay_default_type()
 
     async with get_db() as conn:
         cursor = await conn.cursor()
@@ -152,7 +148,7 @@ async def create_order_for_package(
                 pkg.sku_id,
                 int(pkg.credits),
                 str(pkg.amount),
-                PAID_AD_CURRENCY,
+                runtime_settings.paid_ad_currency(),
                 "created",
                 created_at,
                 expires_at,

@@ -18,11 +18,8 @@ from telegram.ext import CallbackContext, ApplicationHandlerStop
 
 from config.settings import (
     ADMIN_IDS,
-    SLOT_AD_ENABLED,
-    SLOT_AD_REMINDER_ADVANCE_DAYS,
-    UPAY_ALLOWED_TYPES,
-    UPAY_DEFAULT_TYPE,
 )
+from utils import runtime_settings
 from utils.ad_risk_reviewer import review_ad_risk
 from utils.qr_code import make_qr_png_bytes
 from utils.scheduled_publish_service import (
@@ -82,14 +79,14 @@ def _build_slot_plan_keyboard(*, slot_id: int, current_type: str) -> InlineKeybo
     rows = []
     for p in plans:
         rows.append([InlineKeyboardButton(f"{p.days} 天 - {p.amount}", callback_data=f"slot_plan_{slot_id}_{p.days}")])
-    if UPAY_ALLOWED_TYPES:
+    if runtime_settings.upay_allowed_types():
         rows.append([InlineKeyboardButton(f"币种：{current_type}", callback_data=f"slot_types_{slot_id}")])
     rows.append([InlineKeyboardButton("取消", callback_data="slot_cancel")])
     return InlineKeyboardMarkup(rows)
 
 
 def _build_slot_types_keyboard(*, slot_id: int, current_type: str) -> InlineKeyboardMarkup:
-    types = UPAY_ALLOWED_TYPES or []
+    types = runtime_settings.upay_allowed_types() or []
     if not types:
         return InlineKeyboardMarkup([[InlineKeyboardButton("暂无可选币种", callback_data=f"slot_back_plans_{slot_id}")]])
     rows = []
@@ -208,8 +205,13 @@ async def try_handle_start_args(update: Update, context: CallbackContext) -> boo
         await update.message.reply_text("❌ 无效的广告位参数")
         return True
 
-    if not SLOT_AD_ENABLED:
+    if not runtime_settings.slot_ad_enabled():
         await update.message.reply_text("❌ 按钮广告位功能未开启")
+        return True
+
+    active_rows_count = int(runtime_settings.slot_ad_active_rows_count())
+    if slot_id <= 0 or slot_id > active_rows_count:
+        await update.message.reply_text(f"❌ 该广告位（{int(slot_id)}）当前未启用（启用范围：1..{active_rows_count}）")
         return True
 
     user_id = update.effective_user.id
@@ -225,7 +227,7 @@ async def try_handle_start_args(update: Update, context: CallbackContext) -> boo
         "mode": mode,
         "stage": "choose_plan",
         "renew_start_at": renew_start_at,
-        "pay_type": UPAY_DEFAULT_TYPE,
+        "pay_type": runtime_settings.upay_default_type(),
     }
 
     if not get_plans():
@@ -235,7 +237,7 @@ async def try_handle_start_args(update: Update, context: CallbackContext) -> boo
 
     await update.message.reply_text(
         f"📌 购买广告位：{slot_id}\n\n请选择租期：",
-        reply_markup=_build_slot_plan_keyboard(slot_id=slot_id, current_type=UPAY_DEFAULT_TYPE),
+        reply_markup=_build_slot_plan_keyboard(slot_id=slot_id, current_type=runtime_settings.upay_default_type()),
     )
     return True
 
@@ -268,7 +270,7 @@ async def handle_slot_callback(update: Update, context: CallbackContext) -> None
             await query.answer("❌ 无效操作", show_alert=True)
             return
         flow = context.user_data.get(FLOW_KEY) or {}
-        current_type = str(flow.get("pay_type") or UPAY_DEFAULT_TYPE)
+        current_type = str(flow.get("pay_type") or runtime_settings.upay_default_type())
         await query.edit_message_text(
             f"📌 购买广告位：{slot_id}\n\n请选择租期：",
             reply_markup=_build_slot_plan_keyboard(slot_id=slot_id, current_type=current_type),
@@ -282,7 +284,7 @@ async def handle_slot_callback(update: Update, context: CallbackContext) -> None
             await query.answer("❌ 无效操作", show_alert=True)
             return
         flow = context.user_data.get(FLOW_KEY) or {}
-        current_type = str(flow.get("pay_type") or UPAY_DEFAULT_TYPE)
+        current_type = str(flow.get("pay_type") or runtime_settings.upay_default_type())
         await query.edit_message_text(
             "请选择收款币种/网络：",
             reply_markup=_build_slot_types_keyboard(slot_id=slot_id, current_type=current_type),
@@ -300,7 +302,7 @@ async def handle_slot_callback(update: Update, context: CallbackContext) -> None
         except Exception:
             await query.answer("❌ 无效操作", show_alert=True)
             return
-        if t not in (UPAY_ALLOWED_TYPES or []):
+        if t not in (runtime_settings.upay_allowed_types() or []):
             await query.answer("❌ 无效币种", show_alert=True)
             return
         flow = context.user_data.get(FLOW_KEY)
@@ -359,7 +361,11 @@ async def handle_slot_callback(update: Update, context: CallbackContext) -> None
 
     if data.startswith("slot_remind_on_"):
         out_trade_no = data.replace("slot_remind_on_", "", 1)
-        ok = await enable_expiry_reminder(out_trade_no=out_trade_no, user_id=user_id, advance_days=int(SLOT_AD_REMINDER_ADVANCE_DAYS))
+        ok = await enable_expiry_reminder(
+            out_trade_no=out_trade_no,
+            user_id=user_id,
+            advance_days=int(runtime_settings.slot_ad_reminder_advance_days()),
+        )
         if ok:
             await query.answer("✅ 已开启到期提醒", show_alert=False)
         else:
@@ -465,7 +471,7 @@ async def handle_slot_text_input(update: Update, context: CallbackContext) -> No
                 creative_id=creative_id,
                 plan_days=plan_days,
                 planned_start_at=float(planned_start_at),
-                pay_type=str(flow.get("pay_type") or UPAY_DEFAULT_TYPE),
+                pay_type=str(flow.get("pay_type") or runtime_settings.upay_default_type()),
             )
         except Exception as e:
             logger.error(f"创建 Slot Ads 支付订单失败: {e}", exc_info=True)

@@ -9,22 +9,19 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ConversationHandler, CallbackContext
 
 from config.settings import (
-    AI_REVIEW_ENABLED,
-    AI_REVIEW_NOTIFY_USER,
     AI_REVIEW_NOTIFY_ADMIN_ON_REJECT,
     AI_REVIEW_NOTIFY_ADMIN_ON_DUPLICATE,
-    AI_REVIEW_CHANNEL_TOPIC,
     DUPLICATE_CHECK_ENABLED,
     DUPLICATE_NOTIFY_USER,
     OWNER_ID,
     ADMIN_IDS,
-    PAID_AD_ENABLED,
 )
 from database.db_manager import get_db
 from utils.ai_reviewer import get_ai_reviewer, ReviewResult
 from utils.duplicate_detector import get_duplicate_detector, DuplicateResult
 from utils.feature_extractor import get_feature_extractor
 from utils.paid_ad_service import get_balance
+from utils import runtime_settings
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +64,7 @@ async def perform_review(
             return (False, False, dup_result.message)
 
     # 2. AI 审核
-    if AI_REVIEW_ENABLED and not skip_ai_review:
+    if runtime_settings.ai_review_enabled() and not skip_ai_review:
         review_result = await _perform_ai_review(submission_data)
 
         reviewer = get_ai_reviewer()
@@ -178,9 +175,9 @@ async def _handle_rejection(
     username = user_info.get('username', '')
 
     # 通知用户
-    if AI_REVIEW_NOTIFY_USER:
+    if runtime_settings.ai_review_notify_user():
         reviewer = get_ai_reviewer()
-        if PAID_AD_ENABLED and reviewer.is_off_topic_category(result.category):
+        if runtime_settings.paid_ad_enabled() and reviewer.is_off_topic_category(result.category):
             balance = await get_balance(user_id)
             keyboard = [
                 [
@@ -203,7 +200,7 @@ async def _handle_rejection(
             message = (
                 "❌ 投稿未通过审核\n\n"
                 f"原因：{result.reason}\n\n"
-                f"本频道仅接受与「{AI_REVIEW_CHANNEL_TOPIC}」相关的内容投稿。\n"
+                f"本频道仅接受与「{runtime_settings.ai_review_channel_topic()}」相关的内容投稿。\n"
                 "如有疑问，请联系管理员。"
             )
             await update.message.reply_text(message)
@@ -393,7 +390,7 @@ async def handle_review_callback(update: Update, context: CallbackContext):
                     await context.bot.send_message(
                         chat_id=user_id,
                         text="❌ 您的投稿未通过审核\n\n"
-                             f"本频道仅接受与「{AI_REVIEW_CHANNEL_TOPIC}」相关的内容。\n"
+                             f"本频道仅接受与「{runtime_settings.ai_review_channel_topic()}」相关的内容。\n"
                              "如有疑问，请联系管理员。"
                     )
                 except Exception as e:

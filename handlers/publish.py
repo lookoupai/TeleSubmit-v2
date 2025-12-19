@@ -23,10 +23,7 @@ from config.settings import (
     OWNER_ID,
     NOTIFY_OWNER,
     DUPLICATE_CHECK_ENABLED,
-    AI_REVIEW_ENABLED,
     RATING_ENABLED,
-    PAID_AD_ENABLED,
-    PAID_AD_PUBLISH_PREFIX,
 )
 from database.db_manager import get_db, cleanup_old_data
 from utils.helper_functions import build_caption, safe_send
@@ -34,6 +31,7 @@ from utils.search_engine import get_search_engine, PostDocument
 from handlers.review_handlers import perform_review, save_fingerprint_after_publish
 from utils.rating_service import get_rating_service
 from utils.paid_ad_service import reserve_one_credit, refund_one_credit
+from utils import runtime_settings
 
 logger = logging.getLogger(__name__)
 
@@ -238,10 +236,10 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
             await update.message.reply_text("❌ 未检测到任何上传文件或文本内容，请重新发送 /start")
             return ConversationHandler.END
 
-        is_paid_ad = bool(context.user_data.get("paid_ad")) and PAID_AD_ENABLED
+        is_paid_ad = bool(context.user_data.get("paid_ad")) and runtime_settings.paid_ad_enabled()
 
         # === 审核流程：重复检测和 AI 审核 ===
-        if DUPLICATE_CHECK_ENABLED or AI_REVIEW_ENABLED:
+        if DUPLICATE_CHECK_ENABLED or runtime_settings.ai_review_enabled():
             # 构建投稿数据用于审核
             submission_data = {
                 'text_content': text_content,
@@ -325,7 +323,7 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
                 logger.error(f"解析评分实体时出错: {e}", exc_info=True)
 
         # 广告前缀：媒体/文档/混合放在 caption 顶部；纯文本放在消息顶部
-        ad_prefix = (PAID_AD_PUBLISH_PREFIX or "📢 广告").strip() if is_paid_ad else ""
+        ad_prefix = (runtime_settings.paid_ad_publish_prefix() or "📢 广告").strip() if is_paid_ad else ""
         caption_for_media = caption
         if is_paid_ad and not (text_content and not media_list and not doc_list):
             caption_for_media = f"{ad_prefix}\n\n{caption}" if caption else ad_prefix

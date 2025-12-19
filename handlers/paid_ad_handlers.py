@@ -12,7 +12,7 @@ from telegram import CopyTextButton, InputFile, Update, InlineKeyboardButton, In
 from telegram.constants import ParseMode
 from telegram.ext import CallbackContext, ConversationHandler
 
-from config.settings import PAID_AD_CURRENCY, PAID_AD_ENABLED, UPAY_ALLOWED_TYPES, UPAY_DEFAULT_TYPE
+from utils import runtime_settings
 from handlers.mode_selection import submit
 from utils.blacklist import is_blacklisted
 from utils.qr_code import make_qr_png_bytes
@@ -32,13 +32,13 @@ def _as_html_code(value: object) -> str:
 
 def _get_selected_pay_type(context: CallbackContext) -> str:
     selected = str((context.user_data or {}).get("paid_ad_pay_type") or "").strip()
-    if selected and selected in (UPAY_ALLOWED_TYPES or []):
+    if selected and selected in (runtime_settings.upay_allowed_types() or []):
         return selected
-    return UPAY_DEFAULT_TYPE
+    return runtime_settings.upay_default_type()
 
 
 def _build_types_keyboard(*, current_type: str) -> InlineKeyboardMarkup:
-    types = UPAY_ALLOWED_TYPES or []
+    types = runtime_settings.upay_allowed_types() or []
     if not types:
         return InlineKeyboardMarkup([[InlineKeyboardButton("暂无可选币种", callback_data="paid_ad_buy_menu")]])
 
@@ -53,7 +53,7 @@ async def ad(update: Update, context: CallbackContext) -> int:
     """
     /ad：进入广告发布流程（跳过 AI/人工审核，但仍保留黑名单等前置校验）
     """
-    if not PAID_AD_ENABLED:
+    if not runtime_settings.paid_ad_enabled():
         await update.message.reply_text("❌ 付费广告功能未开启")
         return ConversationHandler.END
 
@@ -80,7 +80,7 @@ async def ad(update: Update, context: CallbackContext) -> int:
 
 
 async def ad_balance(update: Update, context: CallbackContext) -> None:
-    if not PAID_AD_ENABLED:
+    if not runtime_settings.paid_ad_enabled():
         await update.message.reply_text("❌ 付费广告功能未开启")
         return
     user_id = update.effective_user.id
@@ -99,11 +99,11 @@ def _build_packages_keyboard(*, current_type: str) -> InlineKeyboardMarkup:
     rows = []
     for p in packages:
         rows.append([InlineKeyboardButton(
-            f"购买 {p.credits} 次 - {p.amount} {PAID_AD_CURRENCY}",
+            f"购买 {p.credits} 次 - {p.amount} {runtime_settings.paid_ad_currency()}",
             callback_data=f"paid_ad_buy_{p.sku_id}",
         )])
 
-    if UPAY_ALLOWED_TYPES:
+    if runtime_settings.upay_allowed_types():
         rows.append([InlineKeyboardButton(f"币种：{current_type}", callback_data="paid_ad_types")])
     return InlineKeyboardMarkup(rows)
 
@@ -116,7 +116,7 @@ async def handle_paid_ad_callback(update: Update, context: CallbackContext) -> O
     data = query.data
     user_id = update.effective_user.id
 
-    if not PAID_AD_ENABLED:
+    if not runtime_settings.paid_ad_enabled():
         await query.edit_message_text("❌ 付费广告功能未开启")
         return ConversationHandler.END
 
@@ -140,7 +140,7 @@ async def handle_paid_ad_callback(update: Update, context: CallbackContext) -> O
 
     if data.startswith("paid_ad_set_type_"):
         t = data.replace("paid_ad_set_type_", "", 1)
-        if t not in (UPAY_ALLOWED_TYPES or []):
+        if t not in (runtime_settings.upay_allowed_types() or []):
             await query.answer("❌ 无效币种", show_alert=True)
             return None
         context.user_data["paid_ad_pay_type"] = t
@@ -194,7 +194,7 @@ async def handle_paid_ad_callback(update: Update, context: CallbackContext) -> O
         await query.edit_message_text(
             "🧾 订单已创建\n\n"
             f"订单号：{out_trade_no}\n"
-            f"套餐：{pkg.credits} 次 - {pkg.amount} {PAID_AD_CURRENCY}\n\n"
+            f"套餐：{pkg.credits} 次 - {pkg.amount} {runtime_settings.paid_ad_currency()}\n\n"
             + (f"{pay_amount_line}\n" if pay_amount_line else "")
             + (f"{pay_address_line}\n\n" if pay_address_line else "\n")
             + "完成支付后，可点击“我已支付”进行确认入账（回调延迟/丢失时可用）。\n"

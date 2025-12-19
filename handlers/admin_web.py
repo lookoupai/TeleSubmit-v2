@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from aiohttp import web
 
-from config.settings import ADMIN_WEB_PATH, ADMIN_WEB_TITLE, ADMIN_WEB_TOKENS
+from config.settings import ADMIN_WEB_PATH, ADMIN_WEB_TITLE, ADMIN_WEB_TOKENS, SLOT_AD_MAX_ROWS
 from utils.scheduled_publish_service import compute_next_run_at, get_config as get_sched_config, update_config_fields
 from utils.slot_ad_service import (
     build_channel_keyboard,
@@ -26,10 +26,12 @@ from utils.slot_ad_service import (
     get_pending_orders,
     get_reserved_orders,
     get_slot_defaults,
-    set_slot_default,
+    parse_default_buttons_lines,
+    set_slot_default_buttons,
     set_slot_sell_enabled,
     terminate_active_order,
 )
+from utils import runtime_settings
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +134,8 @@ def _html_page(*, title: str, body: str) -> web.Response:
       <a href="{ADMIN_WEB_PATH}">首页</a>
       <a href="{ADMIN_WEB_PATH}/schedule">定时发布</a>
       <a href="{ADMIN_WEB_PATH}/slots">广告位</a>
+      <a href="{ADMIN_WEB_PATH}/ads">广告参数</a>
+      <a href="{ADMIN_WEB_PATH}/ai">AI审核</a>
       <a href="{ADMIN_WEB_PATH}/logout">退出</a>
     </div>
   </header>
@@ -187,11 +191,344 @@ async def index(request: web.Request) -> web.Response:
   <div class="row">
     <a href="{base}/schedule"><button>管理定时发布</button></a>
     <a href="{base}/slots"><button>管理广告位</button></a>
+    <a href="{base}/ads"><button>管理广告参数</button></a>
+    <a href="{base}/ai"><button>管理 AI 审核</button></a>
   </div>
   <p style="opacity:.75;margin-bottom:0">本后台仅管理已落库的热更新项；修改 <code>config.ini</code> 类配置仍需要重启生效。</p>
 </div>
 """
     return _html_page(title="首页", body=body)
+
+
+async def ads_get(request: web.Request) -> web.Response:
+    _require_auth(request)
+
+    def _src(key: str) -> str:
+        return "DB" if runtime_settings.get_raw(key) is not None else "config.ini"
+
+    body = f"""
+<div class="card">
+  <h2 style="margin-top:0">广告参数（热更新）</h2>
+  <p style="opacity:.75;margin:0">此页仅管理非密钥项；UPAY_SECRET_KEY / AI_REVIEW_API_KEY 等仍需通过 <code>config.ini</code> 或环境变量配置。</p>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0">付费广告（/ad）</h3>
+  <form method="post" action="{ADMIN_WEB_PATH}/ads">
+    <div class="grid">
+      <div>
+        <label>启用（来源：{_src(runtime_settings.KEY_PAID_AD_ENABLED)}）</label>
+        <select name="paid_ad_enabled">
+          <option value="1" {"selected" if runtime_settings.paid_ad_enabled() else ""}>启用</option>
+          <option value="0" {"selected" if not runtime_settings.paid_ad_enabled() else ""}>关闭</option>
+        </select>
+      </div>
+      <div>
+        <label>币种展示（来源：{_src(runtime_settings.KEY_PAID_AD_CURRENCY)}）</label>
+        <input type="text" name="paid_ad_currency" value="{html.escape(runtime_settings.paid_ad_currency())}" />
+      </div>
+      <div>
+        <label>发布前缀（来源：{_src(runtime_settings.KEY_PAID_AD_PUBLISH_PREFIX)}）</label>
+        <input type="text" name="paid_ad_publish_prefix" value="{html.escape(runtime_settings.paid_ad_publish_prefix())}" />
+      </div>
+      <div>
+        <label>订单过期（分钟）（来源：{_src(runtime_settings.KEY_PAY_EXPIRE_MINUTES)}）</label>
+        <input type="text" name="pay_expire_minutes" value="{html.escape(str(runtime_settings.pay_expire_minutes()))}" />
+      </div>
+      <div>
+        <label>默认收款币种/网络（来源：{_src(runtime_settings.KEY_UPAY_DEFAULT_TYPE)}）</label>
+        <input type="text" name="upay_default_type" value="{html.escape(runtime_settings.upay_default_type())}" />
+      </div>
+      <div>
+        <label>可选币种/网络（逗号分隔）（来源：{_src(runtime_settings.KEY_UPAY_ALLOWED_TYPES)}）</label>
+        <input type="text" name="upay_allowed_types" value="{html.escape(','.join(runtime_settings.upay_allowed_types() or []))}" />
+      </div>
+    </div>
+    <div style="height:12px"></div>
+    <label>套餐（次数:金额，逗号分隔）（来源：{_src(runtime_settings.KEY_PAID_AD_PACKAGES_RAW)}）</label>
+    <input type="text" name="paid_ad_packages_raw" value="{html.escape(runtime_settings.paid_ad_packages_raw())}" />
+    <div style="height:12px"></div>
+
+    <h3 style="margin-top:0">按钮广告位（Slot Ads）</h3>
+    <div class="grid">
+      <div>
+        <label>启用（来源：{_src(runtime_settings.KEY_SLOT_AD_ENABLED)}）</label>
+        <select name="slot_ad_enabled">
+          <option value="1" {"selected" if runtime_settings.slot_ad_enabled() else ""}>启用</option>
+          <option value="0" {"selected" if not runtime_settings.slot_ad_enabled() else ""}>关闭</option>
+        </select>
+      </div>
+      <div>
+        <label>启用行数（前 N 行）（来源：{_src(runtime_settings.KEY_SLOT_AD_ACTIVE_ROWS_COUNT)}，MAX_ROWS={int(SLOT_AD_MAX_ROWS)}）</label>
+        <input type="text" name="slot_ad_active_rows_count" value="{html.escape(str(runtime_settings.slot_ad_active_rows_count()))}" />
+      </div>
+      <div>
+        <label>币种展示（来源：{_src(runtime_settings.KEY_SLOT_AD_CURRENCY)}）</label>
+        <input type="text" name="slot_ad_currency" value="{html.escape(runtime_settings.slot_ad_currency())}" />
+      </div>
+      <div>
+        <label>续期保护窗（天）（来源：{_src(runtime_settings.KEY_SLOT_AD_RENEW_PROTECT_DAYS)}）</label>
+        <input type="text" name="slot_ad_renew_protect_days" value="{html.escape(str(runtime_settings.slot_ad_renew_protect_days()))}" />
+      </div>
+      <div>
+        <label>按钮文案最大长度（来源：{_src(runtime_settings.KEY_SLOT_AD_BUTTON_TEXT_MAX_LEN)}）</label>
+        <input type="text" name="slot_ad_button_text_max_len" value="{html.escape(str(runtime_settings.slot_ad_button_text_max_len()))}" />
+      </div>
+      <div>
+        <label>URL 最大长度（来源：{_src(runtime_settings.KEY_SLOT_AD_URL_MAX_LEN)}）</label>
+        <input type="text" name="slot_ad_url_max_len" value="{html.escape(str(runtime_settings.slot_ad_url_max_len()))}" />
+      </div>
+      <div>
+        <label>到期提醒提前（天）（来源：{_src(runtime_settings.KEY_SLOT_AD_REMINDER_ADVANCE_DAYS)}）</label>
+        <input type="text" name="slot_ad_reminder_advance_days" value="{html.escape(str(runtime_settings.slot_ad_reminder_advance_days()))}" />
+      </div>
+    </div>
+    <div style="height:12px"></div>
+    <label>租期套餐（天数:金额，逗号分隔）（来源：{_src(runtime_settings.KEY_SLOT_AD_PLANS_RAW)}）</label>
+    <input type="text" name="slot_ad_plans_raw" value="{html.escape(runtime_settings.slot_ad_plans_raw())}" />
+
+    <div style="height:12px"></div>
+    <button type="submit">保存</button>
+  </form>
+  <p style="opacity:.75;margin-bottom:0">提示：若你在启动时关闭了付费广告/广告位，Webhook 路由可能未注册；此页“从关闭切换到启用”可能仍需重启生效。</p>
+</div>
+"""
+    return _html_page(title="广告参数", body=body)
+
+
+async def ads_post(request: web.Request) -> web.Response:
+    _require_auth(request)
+    form = await request.post()
+
+    def _t(name: str) -> str:
+        return str(form.get(name) or "").strip()
+
+    paid_enabled = _t("paid_ad_enabled") == "1"
+    slot_enabled = _t("slot_ad_enabled") == "1"
+
+    paid_packages_raw = _t("paid_ad_packages_raw")
+    slot_plans_raw = _t("slot_ad_plans_raw")
+
+    try:
+        if paid_enabled:
+            runtime_settings.validate_paid_ad_packages_raw(paid_packages_raw)
+            if not paid_packages_raw.strip():
+                raise ValueError("PAID_AD.PACKAGES 不能为空")
+        if slot_enabled:
+            runtime_settings.validate_slot_ad_plans_raw(slot_plans_raw)
+            if not slot_plans_raw.strip():
+                raise ValueError("SLOT_AD.PLANS 不能为空")
+
+        pay_expire_minutes = int(_t("pay_expire_minutes") or "0")
+        if pay_expire_minutes <= 0:
+            raise ValueError("PAY_EXPIRE_MINUTES 必须为正整数")
+
+        renew_protect_days = int(_t("slot_ad_renew_protect_days") or "0")
+        if renew_protect_days < 0:
+            raise ValueError("SLOT_AD.RENEW_PROTECT_DAYS 不能为负数")
+
+        btn_max = int(_t("slot_ad_button_text_max_len") or "0")
+        if btn_max <= 0:
+            raise ValueError("SLOT_AD.BUTTON_TEXT_MAX_LEN 必须为正整数")
+
+        url_max = int(_t("slot_ad_url_max_len") or "0")
+        if url_max <= 0:
+            raise ValueError("SLOT_AD.URL_MAX_LEN 必须为正整数")
+
+        remind_days = int(_t("slot_ad_reminder_advance_days") or "0")
+        if remind_days < 0:
+            raise ValueError("SLOT_AD.REMINDER_ADVANCE_DAYS 不能为负数")
+
+        active_rows_count = int(_t("slot_ad_active_rows_count") or "0")
+        if active_rows_count < 0:
+            raise ValueError("SLOT_AD.ACTIVE_ROWS_COUNT 不能为负数")
+        if active_rows_count > int(SLOT_AD_MAX_ROWS):
+            raise ValueError(f"SLOT_AD.ACTIVE_ROWS_COUNT 不能大于 MAX_ROWS={int(SLOT_AD_MAX_ROWS)}")
+
+        # 避免隐藏“已占用/支付中”的行，导致广告消失
+        if slot_enabled:
+            active = await get_active_orders()
+            reserved = await get_reserved_orders()
+            pending = await get_pending_orders()
+            in_use = set((active or {}).keys()) | set((reserved or {}).keys()) | set((pending or {}).keys())
+            max_in_use = max(in_use) if in_use else 0
+            if active_rows_count < int(max_in_use):
+                raise ValueError(f"启用行数不能小于当前占用的最大行号：{int(max_in_use)}")
+    except Exception as e:
+        return _html_page(title="保存失败", body=f"<div class='card'><h2 style='margin-top:0'>保存失败</h2><p>{html.escape(str(e))}</p></div>")
+
+    await runtime_settings.set_many(values={
+        runtime_settings.KEY_PAID_AD_ENABLED: "1" if paid_enabled else "0",
+        runtime_settings.KEY_PAID_AD_PACKAGES_RAW: paid_packages_raw,
+        runtime_settings.KEY_PAID_AD_CURRENCY: _t("paid_ad_currency"),
+        runtime_settings.KEY_PAID_AD_PUBLISH_PREFIX: _t("paid_ad_publish_prefix"),
+        runtime_settings.KEY_UPAY_DEFAULT_TYPE: _t("upay_default_type"),
+        runtime_settings.KEY_UPAY_ALLOWED_TYPES: _t("upay_allowed_types"),
+        runtime_settings.KEY_PAY_EXPIRE_MINUTES: str(pay_expire_minutes),
+
+        runtime_settings.KEY_SLOT_AD_ENABLED: "1" if slot_enabled else "0",
+        runtime_settings.KEY_SLOT_AD_PLANS_RAW: slot_plans_raw,
+        runtime_settings.KEY_SLOT_AD_CURRENCY: _t("slot_ad_currency"),
+        runtime_settings.KEY_SLOT_AD_ACTIVE_ROWS_COUNT: str(active_rows_count),
+        runtime_settings.KEY_SLOT_AD_RENEW_PROTECT_DAYS: str(renew_protect_days),
+        runtime_settings.KEY_SLOT_AD_BUTTON_TEXT_MAX_LEN: str(btn_max),
+        runtime_settings.KEY_SLOT_AD_URL_MAX_LEN: str(url_max),
+        runtime_settings.KEY_SLOT_AD_REMINDER_ADVANCE_DAYS: str(remind_days),
+    })
+    raise web.HTTPFound(location=f"{ADMIN_WEB_PATH}/ads")
+
+
+async def ai_get(request: web.Request) -> web.Response:
+    _require_auth(request)
+
+    def _src(key: str) -> str:
+        return "DB" if runtime_settings.get_raw(key) is not None else "config.ini"
+
+    enabled = runtime_settings.ai_review_enabled()
+    body = f"""
+<div class="card">
+  <h2 style="margin-top:0">AI 审核（热更新）</h2>
+  <div class="row">
+    <span class="pill">enabled: {str(enabled)}</span>
+    <span class="pill">model: {html.escape(runtime_settings.ai_review_model())}</span>
+  </div>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0">修改配置</h3>
+  <form method="post" action="{ADMIN_WEB_PATH}/ai">
+    <div class="grid">
+      <div>
+        <label>启用（来源：{_src(runtime_settings.KEY_AI_REVIEW_ENABLED)}）</label>
+        <select name="ai_enabled">
+          <option value="1" {"selected" if enabled else ""}>启用</option>
+          <option value="0" {"selected" if not enabled else ""}>关闭</option>
+        </select>
+      </div>
+      <div>
+        <label>模型（来源：{_src(runtime_settings.KEY_AI_REVIEW_MODEL)}）</label>
+        <input type="text" name="ai_model" value="{html.escape(runtime_settings.ai_review_model())}" />
+      </div>
+      <div>
+        <label>频道主题（来源：{_src(runtime_settings.KEY_AI_REVIEW_CHANNEL_TOPIC)}）</label>
+        <input type="text" name="ai_channel_topic" value="{html.escape(runtime_settings.ai_review_channel_topic())}" />
+      </div>
+      <div>
+        <label>主题关键词（逗号分隔）（来源：{_src(runtime_settings.KEY_AI_REVIEW_TOPIC_KEYWORDS)}）</label>
+        <input type="text" name="ai_topic_keywords" value="{html.escape(runtime_settings.ai_review_topic_keywords_csv())}" />
+      </div>
+      <div>
+        <label>严格模式（来源：{_src(runtime_settings.KEY_AI_REVIEW_STRICT_MODE)}）</label>
+        <select name="ai_strict_mode">
+          <option value="1" {"selected" if runtime_settings.ai_review_strict_mode() else ""}>开启</option>
+          <option value="0" {"selected" if not runtime_settings.ai_review_strict_mode() else ""}>关闭</option>
+        </select>
+      </div>
+      <div>
+        <label>不相关自动拒绝（来源：{_src(runtime_settings.KEY_AI_REVIEW_AUTO_REJECT)}）</label>
+        <select name="ai_auto_reject">
+          <option value="1" {"selected" if runtime_settings.ai_review_auto_reject() else ""}>开启</option>
+          <option value="0" {"selected" if not runtime_settings.ai_review_auto_reject() else ""}>关闭</option>
+        </select>
+      </div>
+      <div>
+        <label>通知用户审核结果（来源：{_src(runtime_settings.KEY_AI_REVIEW_NOTIFY_USER)}）</label>
+        <select name="ai_notify_user">
+          <option value="1" {"selected" if runtime_settings.ai_review_notify_user() else ""}>开启</option>
+          <option value="0" {"selected" if not runtime_settings.ai_review_notify_user() else ""}>关闭</option>
+        </select>
+      </div>
+      <div>
+        <label>API 失败降级策略（manual/pass/reject）（来源：{_src(runtime_settings.KEY_AI_REVIEW_FALLBACK_ON_ERROR)}）</label>
+        <select name="ai_fallback">
+          <option value="manual" {"selected" if runtime_settings.ai_review_fallback_on_error().lower() == "manual" else ""}>manual（转人工）</option>
+          <option value="pass" {"selected" if runtime_settings.ai_review_fallback_on_error().lower() == "pass" else ""}>pass（直接通过）</option>
+          <option value="reject" {"selected" if runtime_settings.ai_review_fallback_on_error().lower() == "reject" else ""}>reject（直接拒绝）</option>
+        </select>
+      </div>
+    </div>
+
+    <div style="height:12px"></div>
+    <label>System Prompt（来源：{_src(runtime_settings.KEY_AI_REVIEW_SYSTEM_PROMPT)}）</label>
+    <textarea name="ai_system_prompt">{html.escape(runtime_settings.ai_review_system_prompt())}</textarea>
+
+    <div style="height:12px"></div>
+    <label>审核策略文本（来源：{_src(runtime_settings.KEY_AI_REVIEW_POLICY_TEXT)}）</label>
+    <p style="margin:6px 0 0;opacity:.8">
+      可用占位符：<code>{{channel_topic}}</code>（对应“频道主题”）、
+      <code>{{topic_keywords}}</code>（对应“主题关键词”）；保存后会在运行时替换为当前配置值。
+    </p>
+    <textarea name="ai_policy_text">{html.escape(runtime_settings.ai_review_policy_text())}</textarea>
+
+    <div style="height:12px"></div>
+    <h3 style="margin:0">按钮广告风控（Slot Ads）</h3>
+    <p style="margin:6px 0 0;opacity:.8">
+      该功能用于审核“按钮广告位”的按钮文案/链接（轻度风控）。复用同一套 AI API 配置（密钥仍在 <code>config.ini</code>）。
+      Prompt 支持占位符：<code>{{button_text}}</code>、<code>{{button_url}}</code>。
+    </p>
+
+    <div style="height:12px"></div>
+    <label>风控 System Prompt（来源：{_src(runtime_settings.KEY_AD_RISK_SYSTEM_PROMPT)}）</label>
+    <textarea name="ad_risk_system_prompt">{html.escape(runtime_settings.ad_risk_system_prompt())}</textarea>
+
+    <div style="height:12px"></div>
+    <label>风控 Prompt 模板（来源：{_src(runtime_settings.KEY_AD_RISK_PROMPT_TEMPLATE)}）</label>
+    <textarea name="ad_risk_prompt_template">{html.escape(runtime_settings.ad_risk_prompt_template())}</textarea>
+
+    <div style="height:12px"></div>
+    <button type="submit">保存</button>
+  </form>
+</div>
+"""
+    return _html_page(title="AI 审核", body=body)
+
+
+async def ai_post(request: web.Request) -> web.Response:
+    _require_auth(request)
+    form = await request.post()
+
+    def _t(name: str) -> str:
+        return str(form.get(name) or "").strip()
+
+    enabled = _t("ai_enabled") == "1"
+    model = _t("ai_model")
+    channel_topic = _t("ai_channel_topic")
+    topic_keywords = _t("ai_topic_keywords")
+    strict_mode = _t("ai_strict_mode") == "1"
+    auto_reject = _t("ai_auto_reject") == "1"
+    notify_user = _t("ai_notify_user") == "1"
+    fallback = _t("ai_fallback").lower()
+    system_prompt = _t("ai_system_prompt")
+    policy_text = _t("ai_policy_text")
+    ad_risk_system_prompt = _t("ad_risk_system_prompt")
+    ad_risk_prompt_template = _t("ad_risk_prompt_template")
+
+    try:
+        if enabled:
+            if not model:
+                raise ValueError("MODEL 不能为空")
+            if not channel_topic:
+                raise ValueError("CHANNEL_TOPIC 不能为空")
+        if fallback not in ("manual", "pass", "reject"):
+            raise ValueError("FALLBACK_ON_ERROR 只能是 manual/pass/reject")
+    except Exception as e:
+        return _html_page(title="保存失败", body=f"<div class='card'><h2 style='margin-top:0'>保存失败</h2><p>{html.escape(str(e))}</p></div>")
+
+    await runtime_settings.set_many(values={
+        runtime_settings.KEY_AI_REVIEW_ENABLED: "1" if enabled else "0",
+        runtime_settings.KEY_AI_REVIEW_MODEL: model,
+        runtime_settings.KEY_AI_REVIEW_CHANNEL_TOPIC: channel_topic,
+        runtime_settings.KEY_AI_REVIEW_TOPIC_KEYWORDS: topic_keywords,
+        runtime_settings.KEY_AI_REVIEW_STRICT_MODE: "1" if strict_mode else "0",
+        runtime_settings.KEY_AI_REVIEW_AUTO_REJECT: "1" if auto_reject else "0",
+        runtime_settings.KEY_AI_REVIEW_NOTIFY_USER: "1" if notify_user else "0",
+        runtime_settings.KEY_AI_REVIEW_FALLBACK_ON_ERROR: fallback,
+        runtime_settings.KEY_AI_REVIEW_SYSTEM_PROMPT: system_prompt,
+        runtime_settings.KEY_AI_REVIEW_POLICY_TEXT: policy_text,
+        runtime_settings.KEY_AD_RISK_SYSTEM_PROMPT: ad_risk_system_prompt,
+        runtime_settings.KEY_AD_RISK_PROMPT_TEMPLATE: ad_risk_prompt_template,
+    })
+    raise web.HTTPFound(location=f"{ADMIN_WEB_PATH}/ai")
 
 
 async def schedule_get(request: web.Request) -> web.Response:
@@ -258,7 +595,33 @@ async def schedule_get(request: web.Request) -> web.Response:
     </div>
     <div style="height:12px"></div>
     <label>定时消息正文（支持 {{date}} / {{datetime}} 占位符；HTML 解析失败会自动降级为纯文本）</label>
+    <p style="margin:6px 0 0;opacity:.8">
+      占位符说明：<code>{{date}}</code> -> 服务器日期（YYYY-MM-DD），<code>{{datetime}}</code> -> 服务器时间（YYYY-MM-DD HH:MM:SS）。
+    </p>
     <textarea name="message_text">{html.escape(cfg.message_text or "")}</textarea>
+    <div style="height:12px"></div>
+    <details style="border:1px solid rgba(127,127,127,.25);border-radius:10px;padding:12px 12px 10px">
+      <summary style="cursor:pointer"><b>Telegram HTML 常用格式速查（点开/收起）</b></summary>
+      <div style="height:10px"></div>
+      <p style="margin-top:0;opacity:.8">本机器人以 <code>ParseMode.HTML</code> 发送定时消息。常用写法如下（复制到正文即可）：</p>
+      <table>
+        <thead>
+          <tr><th>效果</th><th>写法</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>粗体</td><td><code>&lt;b&gt;粗体&lt;/b&gt;</code></td></tr>
+          <tr><td>斜体</td><td><code>&lt;i&gt;斜体&lt;/i&gt;</code></td></tr>
+          <tr><td>下划线</td><td><code>&lt;u&gt;下划线&lt;/u&gt;</code></td></tr>
+          <tr><td>删除线</td><td><code>&lt;s&gt;删除线&lt;/s&gt;</code></td></tr>
+          <tr><td>等宽（行内代码）</td><td><code>&lt;code&gt;code&lt;/code&gt;</code></td></tr>
+          <tr><td>代码块</td><td><code>&lt;pre&gt;code block&lt;/pre&gt;</code></td></tr>
+          <tr><td>引用</td><td><code>&lt;blockquote&gt;引用内容&lt;/blockquote&gt;</code></td></tr>
+          <tr><td>剧透</td><td><code>&lt;span class="tg-spoiler"&gt;剧透内容&lt;/span&gt;</code></td></tr>
+          <tr><td>链接</td><td><code>&lt;a href="https://example.com"&gt;链接文字&lt;/a&gt;</code></td></tr>
+        </tbody>
+      </table>
+      <p style="opacity:.8;margin-bottom:0">提示：若 HTML 写法不合法，发送会自动降级为纯文本，避免整条定时消息丢失。</p>
+    </details>
     <div style="height:12px"></div>
     <button type="submit">保存</button>
   </form>
@@ -321,8 +684,12 @@ async def slots_get(request: web.Request) -> web.Response:
         r = reserved.get(slot_id)
         p = pending.get(slot_id)
         sell_enabled = bool(d.get("sell_enabled"))
-        default_text = d.get("default_text") or ""
-        default_url = d.get("default_url") or ""
+        default_buttons = d.get("default_buttons") or []
+        default_buttons_lines = "\n".join(
+            f"{str(btn.get('text') or '').strip()} | {str(btn.get('url') or '').strip()}"
+            for btn in default_buttons
+            if isinstance(btn, dict) and str(btn.get("text") or "").strip() and str(btn.get("url") or "").strip()
+        )
 
         active_html = "-"
         terminate_form = ""
@@ -389,11 +756,8 @@ async def slots_get(request: web.Request) -> web.Response:
             <td style="min-width:280px">
               <form method="post" action="{ADMIN_WEB_PATH}/slots/save">
                 <input type="hidden" name="slot_id" value="{slot_id}" />
-                <label>默认按钮文案</label>
-                <input type="text" name="default_text" value="{html.escape(default_text)}" />
-                <div style="height:6px"></div>
-                <label>默认按钮链接（https）</label>
-                <input type="text" name="default_url" value="{html.escape(default_url)}" />
+                <label>默认按钮列表（每行：文案 | https://链接；最多 7 个，若开启售卖会额外追加“购买”）</label>
+                <textarea name="default_buttons" rows="4" style="width:100%">{html.escape(default_buttons_lines)}</textarea>
                 <div style="height:6px"></div>
                 <label>售卖开关</label>
                 <select name="sell_enabled">
@@ -409,10 +773,11 @@ async def slots_get(request: web.Request) -> web.Response:
           </tr>
         """)
 
+    active_rows_count = int(runtime_settings.slot_ad_active_rows_count())
     body = f"""
 <div class="card">
-  <h2 style="margin-top:0">广告位（slot_1..slot_10）</h2>
-  <p style="opacity:.75;margin:0">保存后立即生效；若终止生效广告，会尝试立刻更新“最近一次定时消息”的按钮。</p>
+  <h2 style="margin-top:0">广告位（slot_1..slot_{len(slot_defaults)}）</h2>
+  <p style="opacity:.75;margin:0">当前启用行数：前 {active_rows_count} 行；保存后立即生效；若终止生效广告，会尝试立刻更新“最近一次定时消息”的按钮。</p>
 </div>
 
 <div class="card">
@@ -443,11 +808,18 @@ async def slots_save(request: web.Request) -> web.Response:
         raise web.HTTPBadRequest(text="bad slot_id")
 
     clear = str(form.get("clear") or "").strip() == "1"
-    default_text = (str(form.get("default_text") or "").strip() or None) if not clear else None
-    default_url = (str(form.get("default_url") or "").strip() or None) if not clear else None
     sell_enabled = str(form.get("sell_enabled") or "1").strip() == "1"
 
-    await set_slot_default(slot_id, default_text, default_url)
+    raw_buttons = "" if clear else str(form.get("default_buttons") or "")
+    try:
+        default_buttons = [] if clear else parse_default_buttons_lines(raw_buttons)
+    except Exception as e:
+        return _html_page(
+            title="保存失败",
+            body=f"<div class='card'><h2 style='margin-top:0'>保存失败</h2><p>{html.escape(str(e))}</p></div>",
+        )
+
+    await set_slot_default_buttons(slot_id, default_buttons)
     await set_slot_sell_enabled(slot_id, sell_enabled)
     raise web.HTTPFound(location=f"{ADMIN_WEB_PATH}/slots")
 
@@ -500,4 +872,8 @@ def build_admin_routes() -> List[Tuple[str, str, Any]]:
         ("GET", f"{base}/slots", slots_get),
         ("POST", f"{base}/slots/save", slots_save),
         ("POST", f"{base}/slots/terminate", slots_terminate),
+        ("GET", f"{base}/ads", ads_get),
+        ("POST", f"{base}/ads", ads_post),
+        ("GET", f"{base}/ai", ai_get),
+        ("POST", f"{base}/ai", ai_post),
     ]

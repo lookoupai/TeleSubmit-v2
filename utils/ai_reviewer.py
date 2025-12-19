@@ -11,20 +11,14 @@ from typing import Optional, Dict, Any
 
 from database.db_manager import get_db
 from config.settings import (
-    AI_REVIEW_ENABLED,
     AI_REVIEW_API_BASE,
     AI_REVIEW_API_KEY,
-    AI_REVIEW_MODEL,
     AI_REVIEW_TIMEOUT,
     AI_REVIEW_MAX_RETRIES,
-    AI_REVIEW_CHANNEL_TOPIC,
-    AI_REVIEW_TOPIC_KEYWORDS,
-    AI_REVIEW_STRICT_MODE,
-    AI_REVIEW_AUTO_REJECT,
     AI_REVIEW_CACHE_ENABLED,
     AI_REVIEW_CACHE_TTL_HOURS,
-    AI_REVIEW_FALLBACK_ON_ERROR
 )
+from utils import runtime_settings
 
 logger = logging.getLogger(__name__)
 
@@ -70,12 +64,8 @@ class AIReviewer:
     def __init__(self):
         self.api_base = AI_REVIEW_API_BASE.rstrip('/')
         self.api_key = AI_REVIEW_API_KEY
-        self.model = AI_REVIEW_MODEL
         self.timeout = AI_REVIEW_TIMEOUT
         self.max_retries = AI_REVIEW_MAX_RETRIES
-        self.channel_topic = AI_REVIEW_CHANNEL_TOPIC
-        self.topic_keywords = [k.strip() for k in AI_REVIEW_TOPIC_KEYWORDS.split(',') if k.strip()]
-        self.strict_mode = AI_REVIEW_STRICT_MODE
         self._client = None
 
     def _get_client(self):
@@ -110,7 +100,7 @@ class AIReviewer:
         Returns:
             ReviewResult: 审核结果
         """
-        if not AI_REVIEW_ENABLED:
+        if not runtime_settings.ai_review_enabled():
             return ReviewResult(approved=True, confidence=1.0, reason="AI 审核未启用")
 
         if not self.api_key:
@@ -154,11 +144,11 @@ class AIReviewer:
         client = self._get_client()
 
         response = await client.chat.completions.create(
-            model=self.model,
+            model=runtime_settings.ai_review_model(),
             messages=[
                 {
                     "role": "system",
-                    "content": "你是一个专业的内容审核助手。请严格按照要求的 JSON 格式返回审核结果。"
+                    "content": runtime_settings.ai_review_system_prompt()
                 },
                 {
                     "role": "user",
@@ -192,10 +182,17 @@ class AIReviewer:
         all_content = f"{title}\n{text_content}\n{note}".strip()
 
         strict_note = ""
-        if self.strict_mode:
+        channel_topic = runtime_settings.ai_review_channel_topic()
+        topic_keywords_csv = runtime_settings.ai_review_topic_keywords_csv()
+        if runtime_settings.ai_review_strict_mode():
             strict_note = "注意：请使用严格模式审核，内容必须高度相关才能通过。"
 
-        prompt = f"""你是一个 Telegram 频道投稿审核助手。该频道主题是：{self.channel_topic}
+        policy_text = runtime_settings.render_ai_review_policy_text(
+            channel_topic=channel_topic,
+            topic_keywords=topic_keywords_csv,
+        )
+
+        prompt = f"""你是一个 Telegram 频道投稿审核助手。该频道主题是：{channel_topic}
 
 请审核以下投稿内容是否与频道主题相关：
 
@@ -208,11 +205,7 @@ class AIReviewer:
 ---
 
 审核标准：
-1. 内容必须与「{self.channel_topic}」主题相关
-2. 相关关键词包括：{', '.join(self.topic_keywords)}
-3. 本频道允许主题相关的供需/推广/广告内容；只要与主题相关即可通过
-4. 与主题无关的内容（包括无关广告、账号供需等）应判为“无关内容”并拒绝
-5. 如果内容模糊或无法判断，设置 requires_manual 为 true，分类为“待定”
+{policy_text}
 {strict_note}
 
 请以 JSON 格式返回审核结果（只返回 JSON，不要其他内容）：
@@ -266,7 +259,7 @@ class AIReviewer:
 
     def _handle_fallback(self, error: str) -> ReviewResult:
         """处理错误时的降级策略"""
-        fallback = AI_REVIEW_FALLBACK_ON_ERROR.lower()
+        fallback = runtime_settings.ai_review_fallback_on_error().lower()
 
         if fallback == 'pass':
             return ReviewResult(
@@ -299,6 +292,7 @@ class AIReviewer:
     def _build_content_string(self, submission: Dict[str, Any]) -> str:
         """构建用于计算哈希的内容字符串"""
         parts = [
+            runtime_settings.ai_review_settings_fingerprint(),
             submission.get('text_content', '') or '',
             submission.get('tags', '') or '',
             submission.get('title', '') or '',
@@ -385,7 +379,7 @@ class AIReviewer:
 
     def should_auto_reject(self, result: ReviewResult) -> bool:
         """判断是否应该自动拒绝"""
-        if not AI_REVIEW_AUTO_REJECT:
+        if not runtime_settings.ai_review_auto_reject():
             return False
         if self._is_off_topic_category(result.category):
             return True

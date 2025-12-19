@@ -172,10 +172,16 @@ PATH = /admin
 # TOKENS = token1,token2
 
 [SLOT_AD]
-# 按钮广告位（slot_1..slot_10）配置
+# 按钮广告位（slot_1..slot_N）配置
 
 # 是否启用按钮广告位
 ENABLED = false
+
+# 最大可用行数（用于初始化/补齐 ad_slots 行；默认 20）
+# MAX_ROWS = 20
+
+# 默认启用行数（前 N 行；也可在 Web 后台热更新覆盖）
+# ACTIVE_ROWS_COUNT = 20
 
 # 租期套餐（天数:金额），逗号分隔
 PLANS = 31:10,62:18

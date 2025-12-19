@@ -20,6 +20,7 @@ from config.settings import (
     AI_REVIEW_MODEL,
     AI_REVIEW_TIMEOUT,
 )
+from utils import runtime_settings
 
 logger = logging.getLogger(__name__)
 
@@ -72,28 +73,12 @@ async def review_ad_risk(*, button_text: str, button_url: str) -> AdRiskReviewRe
             timeout=int(AI_REVIEW_TIMEOUT),
         )
 
-        prompt = f"""你是内容安全审核助手。请对“广告按钮素材”做轻度风险审核，仅识别明确高风险。
-
-素材：
-- 按钮文案：{button_text}
-- 链接：{button_url}
-
-规则：
-- 若涉及“儿童/未成年人性化、引诱、交易”等 -> 拒绝
-- 若涉及“恐怖/血腥/暴力细节” -> 拒绝
-- 其他内容默认通过（不需要严格审核）
-
-请仅返回 JSON（不要其他文本）：
-{{
-  "passed": true/false,
-  "category": "儿童/未成年人|恐怖/血腥|正常",
-  "reason": "简短理由"
-}}"""
+        prompt = runtime_settings.render_ad_risk_prompt(button_text=button_text, button_url=button_url)
 
         resp = await client.chat.completions.create(
             model=AI_REVIEW_MODEL,
             messages=[
-                {"role": "system", "content": "你是专业的内容安全审核助手，只返回 JSON。"},
+                {"role": "system", "content": runtime_settings.ad_risk_system_prompt()},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.1,
@@ -108,4 +93,3 @@ async def review_ad_risk(*, button_text: str, button_url: str) -> AdRiskReviewRe
     except Exception as e:
         logger.warning(f"广告风控 AI 审核失败，将降级为关键词策略: {e}")
         return _keyword_fallback(merged)
-

@@ -6,7 +6,7 @@ from datetime import datetime
 from contextlib import asynccontextmanager
 import aiosqlite
 
-from config.settings import DB_PATH, TIMEOUT, DB_CACHE_KB
+from config.settings import DB_PATH, TIMEOUT, DB_CACHE_KB, SLOT_AD_MAX_ROWS
 
 logger = logging.getLogger(__name__)
 
@@ -363,6 +363,17 @@ async def init_db():
             """)
 
             # ============================================
+            # 运行时配置（热更新 key-value）
+            # ============================================
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS runtime_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT,
+                    updated_at REAL
+                )
+            """)
+
+            # ============================================
             # 按钮广告位（Slot Ads）
             # ============================================
             await conn.execute("""
@@ -370,12 +381,20 @@ async def init_db():
                     slot_id INTEGER PRIMARY KEY,
                     default_text TEXT,
                     default_url TEXT,
+                    default_buttons_json TEXT,
                     sell_enabled INTEGER NOT NULL DEFAULT 1,
                     updated_at REAL
                 )
             """)
-            # 固定 10 个 slot（1..10）
-            for slot_id in range(1, 11):
+            # 兼容迁移：为旧库补齐新字段（多默认按钮）
+            try:
+                await conn.execute("ALTER TABLE ad_slots ADD COLUMN default_buttons_json TEXT")
+                logger.info("已添加 default_buttons_json 字段到 ad_slots 表")
+            except Exception:
+                pass
+
+            # 按配置补齐 slot（1..MAX_ROWS）
+            for slot_id in range(1, int(SLOT_AD_MAX_ROWS) + 1):
                 await conn.execute(
                     "INSERT OR IGNORE INTO ad_slots(slot_id, sell_enabled, updated_at) VALUES (?, 1, strftime('%s','now'))",
                     (slot_id,),
