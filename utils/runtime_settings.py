@@ -59,6 +59,8 @@ KEY_AI_REVIEW_POLICY_TEXT = "ai_review.policy_text"
 KEY_AD_RISK_SYSTEM_PROMPT = "ad_risk.system_prompt"
 KEY_AD_RISK_PROMPT_TEMPLATE = "ad_risk.prompt_template"
 
+KEY_DUPLICATE_CHECK_WINDOW_DAYS = "duplicate_check.window_days"
+
 
 DEFAULT_AI_REVIEW_SYSTEM_PROMPT = "你是一个专业的内容审核助手。请严格按照要求的 JSON 格式返回审核结果。"
 
@@ -403,6 +405,16 @@ def ai_review_settings_fingerprint() -> str:
     return "|".join(parts)
 
 
+def duplicate_check_window_days() -> int:
+    """
+    重复投稿检测时间窗口（天）。
+    - 运行时可热更新（DB）
+    - 回退到 config.ini / 环境变量（静态配置）
+    """
+    fallback = int(getattr(static, "DUPLICATE_CHECK_WINDOW_DAYS", 7))
+    return max(1, get_int(KEY_DUPLICATE_CHECK_WINDOW_DAYS, int(fallback)))
+
+
 async def refresh() -> None:
     """
     从 DB 载入运行时配置快照。
@@ -450,3 +462,14 @@ def validate_paid_ad_packages_raw(raw: str) -> None:
 
 def validate_slot_ad_plans_raw(raw: str) -> None:
     _parse_slot_ad_plans_strict(raw)
+
+
+def validate_duplicate_check_window_days(days: int) -> None:
+    try:
+        value = int(days)
+    except Exception:
+        raise ValueError("DUPLICATE_CHECK_WINDOW_DAYS 必须是整数")
+    if value <= 0:
+        raise ValueError("DUPLICATE_CHECK_WINDOW_DAYS 必须大于 0")
+    if value > 3650:
+        raise ValueError("DUPLICATE_CHECK_WINDOW_DAYS 过大（建议不超过 3650）")

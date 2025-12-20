@@ -4,6 +4,7 @@
 """
 import json
 import logging
+import time
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ConversationHandler, CallbackContext
@@ -24,6 +25,43 @@ from utils.paid_ad_service import get_balance
 from utils import runtime_settings
 
 logger = logging.getLogger(__name__)
+
+
+def _format_duration(seconds: float) -> str:
+    """将秒数格式化为人类可读的等待时长（天/小时/分钟）。"""
+    total_seconds = max(0, int(seconds))
+    days, rem = divmod(total_seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, _ = divmod(rem, 60)
+
+    if total_seconds > 0 and days == 0 and hours == 0 and minutes == 0:
+        minutes = 1
+
+    parts = []
+    if days:
+        parts.append(f"{days}天")
+    if hours:
+        parts.append(f"{hours}小时")
+    if minutes or not parts:
+        parts.append(f"{minutes}分钟")
+    return "".join(parts)
+
+
+def _build_duplicate_wait_hint(original_submit_time: float) -> str:
+    """构建重复投稿的等待提示（上次时间/剩余等待/可再次投稿时间）。"""
+    if not original_submit_time:
+        return ""
+
+    window_days = int(runtime_settings.duplicate_check_window_days())
+    last_dt = datetime.fromtimestamp(original_submit_time)
+    available_at_ts = original_submit_time + (window_days * 86400)
+    available_dt = datetime.fromtimestamp(available_at_ts)
+    remaining_seconds = available_at_ts - time.time()
+
+    return (
+        f"上次投稿时间：{last_dt.strftime('%Y-%m-%d %H:%M')}\n"
+        f"距离可再次投稿还需：{_format_duration(remaining_seconds)}（到 {available_dt.strftime('%Y-%m-%d %H:%M')} 后）"
+    )
 
 
 async def perform_review(
@@ -137,10 +175,13 @@ async def _handle_duplicate_result(
                 "请稍后再试，或联系管理员。"
             )
         else:
+            wait_hint = _build_duplicate_wait_hint(result.original_submit_time)
+            detail = result.message if not wait_hint else f"{result.message}\n\n{wait_hint}"
+            window_days = int(runtime_settings.duplicate_check_window_days())
             message = (
                 "⚠️ 检测到重复投稿\n\n"
-                f"{result.message}\n\n"
-                "为保证频道内容质量，7 天内相同内容不可重复投稿。\n"
+                f"{detail}\n\n"
+                f"为保证频道内容质量，{window_days} 天内相似/相同内容不可重复投稿。\n"
                 "如有疑问，请联系管理员。"
             )
         await update.message.reply_text(message)

@@ -136,6 +136,7 @@ def _html_page(*, title: str, body: str) -> web.Response:
       <a href="{ADMIN_WEB_PATH}/slots">广告位</a>
       <a href="{ADMIN_WEB_PATH}/ads">广告参数</a>
       <a href="{ADMIN_WEB_PATH}/ai">AI审核</a>
+      <a href="{ADMIN_WEB_PATH}/duplicate">重复检测</a>
       <a href="{ADMIN_WEB_PATH}/logout">退出</a>
     </div>
   </header>
@@ -193,6 +194,7 @@ async def index(request: web.Request) -> web.Response:
     <a href="{base}/slots"><button>管理广告位</button></a>
     <a href="{base}/ads"><button>管理广告参数</button></a>
     <a href="{base}/ai"><button>管理 AI 审核</button></a>
+    <a href="{base}/duplicate"><button>管理重复检测</button></a>
   </div>
   <p style="opacity:.75;margin-bottom:0">本后台仅管理已落库的热更新项；修改 <code>config.ini</code> 类配置仍需要重启生效。</p>
 </div>
@@ -529,6 +531,60 @@ async def ai_post(request: web.Request) -> web.Response:
         runtime_settings.KEY_AD_RISK_PROMPT_TEMPLATE: ad_risk_prompt_template,
     })
     raise web.HTTPFound(location=f"{ADMIN_WEB_PATH}/ai")
+
+
+async def duplicate_get(request: web.Request) -> web.Response:
+    _require_auth(request)
+
+    def _src(key: str) -> str:
+        return "DB" if runtime_settings.get_raw(key) is not None else "config.ini"
+
+    window_days = int(runtime_settings.duplicate_check_window_days())
+    body = f"""
+<div class="card">
+  <h2 style="margin-top:0">重复检测（热更新）</h2>
+  <div class="row">
+    <span class="pill">window_days: {str(window_days)}</span>
+  </div>
+  <p style="opacity:.75;margin:10px 0 0">
+    说明：此设置影响“重复检测查询窗口”和用户端提示文案；保存后立即生效。仅对启用了重复检测（<code>DUPLICATE_CHECK.ENABLED</code>）的场景有效。
+  </p>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0">修改配置</h3>
+  <form method="post" action="{ADMIN_WEB_PATH}/duplicate">
+    <div class="grid">
+      <div>
+        <label>检测时间窗口（天）（来源：{_src(runtime_settings.KEY_DUPLICATE_CHECK_WINDOW_DAYS)}）</label>
+        <input type="text" name="duplicate_window_days" value="{html.escape(str(window_days))}" />
+      </div>
+    </div>
+    <div style="height:12px"></div>
+    <button type="submit">保存</button>
+  </form>
+</div>
+"""
+    return _html_page(title="重复检测", body=body)
+
+
+async def duplicate_post(request: web.Request) -> web.Response:
+    _require_auth(request)
+    form = await request.post()
+    raw_days = str(form.get("duplicate_window_days") or "").strip()
+    try:
+        days = int(raw_days)
+        runtime_settings.validate_duplicate_check_window_days(days)
+    except Exception as e:
+        return _html_page(
+            title="保存失败",
+            body=f"<div class='card'><h2 style='margin-top:0'>保存失败</h2><p>{html.escape(str(e))}</p></div>",
+        )
+
+    await runtime_settings.set_many(values={
+        runtime_settings.KEY_DUPLICATE_CHECK_WINDOW_DAYS: str(days),
+    })
+    raise web.HTTPFound(location=f"{ADMIN_WEB_PATH}/duplicate")
 
 
 async def schedule_get(request: web.Request) -> web.Response:
@@ -876,4 +932,6 @@ def build_admin_routes() -> List[Tuple[str, str, Any]]:
         ("POST", f"{base}/ads", ads_post),
         ("GET", f"{base}/ai", ai_get),
         ("POST", f"{base}/ai", ai_post),
+        ("GET", f"{base}/duplicate", duplicate_get),
+        ("POST", f"{base}/duplicate", duplicate_post),
     ]

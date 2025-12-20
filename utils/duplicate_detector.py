@@ -15,9 +15,9 @@ from utils.feature_extractor import (
     get_feature_extractor,
     FINGERPRINT_VERSION
 )
+from utils import runtime_settings
 from config.settings import (
     DUPLICATE_CHECK_ENABLED,
-    DUPLICATE_CHECK_WINDOW_DAYS,
     DUPLICATE_SIMILARITY_THRESHOLD,
     DUPLICATE_CHECK_USER_ID,
     DUPLICATE_CHECK_URLS,
@@ -53,9 +53,11 @@ class DuplicateDetector:
     """重复投稿检测器"""
 
     def __init__(self):
-        self.check_window = DUPLICATE_CHECK_WINDOW_DAYS * 86400  # 转换为秒
         self.threshold = DUPLICATE_SIMILARITY_THRESHOLD
         self.extractor = get_feature_extractor()
+
+    def _check_window_seconds(self) -> int:
+        return int(runtime_settings.duplicate_check_window_days()) * 86400
 
     async def check(self, fingerprint: SubmissionFingerprint) -> DuplicateResult:
         """
@@ -70,7 +72,7 @@ class DuplicateDetector:
         if not DUPLICATE_CHECK_ENABLED:
             return DuplicateResult(is_duplicate=False)
 
-        cutoff_time = time.time() - self.check_window
+        cutoff_time = time.time() - self._check_window_seconds()
 
         # 1. 检查频率限制
         if RATE_LIMIT_ENABLED:
@@ -193,8 +195,8 @@ class DuplicateDetector:
 
                 if matched_features:
                     # 获取原始投稿信息
-                    first_match = matched_features[0]
-                    fp_id, submit_time = existing_features[first_match]
+                    match_records = [existing_features[m] for m in matched_features if m in existing_features]
+                    fp_id, submit_time = max(match_records, key=lambda item: item[1])
 
                     logger.info(f"检测到精确匹配: user_id={fingerprint.user_id}, "
                               f"matched={len(matched_features)} features")
@@ -290,6 +292,7 @@ class DuplicateDetector:
             return DuplicateResult(is_duplicate=False)
 
         matched = []
+        latest_match: Optional[Tuple[int, float]] = None
 
         try:
             async with get_db() as conn:
@@ -313,6 +316,8 @@ class DuplicateDetector:
                     row = await cursor.fetchone()
                     if row:
                         matched.append((feature_type, feature_value))
+                        if latest_match is None or row['submit_time'] > latest_match[1]:
+                            latest_match = (row['id'], row['submit_time'])
 
                 if matched:
                     logger.info(f"检测到关联匹配: user_id={fingerprint.user_id}, "
@@ -323,6 +328,8 @@ class DuplicateDetector:
                         duplicate_type='related',
                         matched_features=matched,
                         similarity_score=0.9,
+                        original_fingerprint_id=latest_match[0] if latest_match else 0,
+                        original_submit_time=latest_match[1] if latest_match else 0.0,
                         message="您的个人签名中的联系方式与近期其他投稿重复"
                     )
 
@@ -439,7 +446,7 @@ class DuplicateDetector:
         Returns:
             int: 清理的记录数
         """
-        cutoff_time = time.time() - self.check_window
+        cutoff_time = time.time() - self._check_window_seconds()
 
         try:
             async with get_db() as conn:
