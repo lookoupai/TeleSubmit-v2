@@ -8,12 +8,13 @@ from telegram.ext import ConversationHandler, CallbackContext
 
 from config.settings import (
     BOT_MODE, MODE_MEDIA, MODE_DOCUMENT, MODE_MIXED, MODE_TEXT, MODE_ALL,
-    ALLOWED_FILE_TYPES, TEXT_ONLY_MODE, DEFAULT_SUBMIT_MODE
+    TEXT_ONLY_MODE, DEFAULT_SUBMIT_MODE
 )
 from utils.file_validator import create_file_validator
 from models.state import STATE
 from database.db_manager import get_db, cleanup_old_data
 from utils.blacklist import is_blacklisted
+from utils.submit_settings import ensure_snapshot, get_snapshot
 from ui.keyboards import Keyboards
 from handlers.text_handlers import show_text_welcome
 from handlers.slot_ad_handlers import try_handle_start_args
@@ -38,6 +39,9 @@ async def submit(update: Update, context: CallbackContext) -> int:
     # 获取用户名信息
     user = update.effective_user
     username = user.username or f"user{user.id}"
+
+    # 初始化投稿会话配置快照（保证同一次投稿流程一致性）
+    ensure_snapshot(context)
     
     # 检查用户是否在黑名单中
     if is_blacklisted(user_id):
@@ -61,7 +65,7 @@ async def submit(update: Update, context: CallbackContext) -> int:
                     (user_id, datetime.now().timestamp(), mode, "[]", "[]", username)
                 )
                 await conn.commit()
-                await show_text_welcome(update)
+                await show_text_welcome(update, context)
                 logger.info(f"已发送纯文本欢迎信息，切换到TEXT_CONTENT状态，user_id: {user_id}")
                 return STATE['TEXT_CONTENT']
 
@@ -71,7 +75,7 @@ async def submit(update: Update, context: CallbackContext) -> int:
                 await c.execute("INSERT INTO submissions (user_id, timestamp, mode, image_id, document_id, username) VALUES (?, ?, ?, ?, ?, ?)",
                           (user_id, datetime.now().timestamp(), mode, "[]", "[]", username))
                 await conn.commit()
-                await show_media_welcome(update)
+                await show_media_welcome(update, context)
                 logger.info(f"已发送媒体欢迎信息，切换到MEDIA状态，user_id: {user_id}")
                 return STATE['MEDIA']
 
@@ -81,7 +85,7 @@ async def submit(update: Update, context: CallbackContext) -> int:
                 await c.execute("INSERT INTO submissions (user_id, timestamp, mode, image_id, document_id, username) VALUES (?, ?, ?, ?, ?, ?)",
                           (user_id, datetime.now().timestamp(), mode, "[]", "[]", username))
                 await conn.commit()
-                await show_document_welcome(update)
+                await show_document_welcome(update, context)
                 logger.info(f"已发送文档欢迎信息，切换到DOC状态，user_id: {user_id}")
                 return STATE['DOC']
 
@@ -245,7 +249,7 @@ async def select_mode(update: Update, context: CallbackContext) -> int:
                                 ("text", "[]", "[]", user_id))
                 await conn.commit()
                 await update.message.reply_text("✅ 已选择纯文本投稿模式", reply_markup=ReplyKeyboardRemove())
-                await show_text_welcome(update)
+                await show_text_welcome(update, context)
                 return STATE['TEXT_CONTENT']
 
             elif "媒体" in text or "📷" in text or "🖼" in text:
@@ -255,7 +259,7 @@ async def select_mode(update: Update, context: CallbackContext) -> int:
                                 ("media", "[]", "[]", user_id))
                 await conn.commit()
                 await update.message.reply_text("✅ 已选择媒体投稿模式", reply_markup=ReplyKeyboardRemove())
-                await show_media_welcome(update)
+                await show_media_welcome(update, context)
                 return STATE['MEDIA']
 
             elif "文档" in text or "📄" in text or "📁" in text:
@@ -265,7 +269,7 @@ async def select_mode(update: Update, context: CallbackContext) -> int:
                                 ("document", "[]", "[]", user_id))
                 await conn.commit()
                 await update.message.reply_text("✅ 已选择文档投稿模式", reply_markup=ReplyKeyboardRemove())
-                await show_document_welcome(update)
+                await show_document_welcome(update, context)
                 return STATE['DOC']
 
             else:
@@ -293,13 +297,23 @@ async def select_mode(update: Update, context: CallbackContext) -> int:
         await update.message.reply_text("❌ 模式选择失败，请稍后再试", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
 
-async def show_media_welcome(update):
+async def show_media_welcome(update, context: CallbackContext):
     """
     显示媒体投稿欢迎信息
     
     Args:
         update: Telegram 更新对象
     """
+    snapshot = get_snapshot(context)
+    allowed_tags = int(snapshot.get("allowed_tags", 30))
+    tags_step = (
+        "2️⃣ 标签：\n"
+        "   - 当前不收集标签，将自动跳过\n\n"
+        if allowed_tags <= 0
+        else
+        "2️⃣ 发送标签（必选）：\n"
+        f"   - 最多{allowed_tags}个标签，用逗号分隔（例如：明日方舟，原神）。\n\n"
+    )
     await update.message.reply_text(
         "📮 欢迎使用媒体投稿功能！请按照以下步骤提交：\n\n"
         "1️⃣ 发送媒体文件（必选）：\n"
@@ -310,8 +324,7 @@ async def show_media_welcome(update):
         "   - ⚠️ 不支持以文件附件方式发送的媒体文件\n"
         "   - ⚠️ 如需以文件附件形式上传媒体，请使用文档投稿模式\n"
         "   - 上传完毕后，请发送 /done_media。\n\n"
-        "2️⃣ 发送标签（必选）：\n"
-        "   - 最多30个标签，用逗号分隔（例如：明日方舟，原神）。\n\n"
+        f"{tags_step}"
         "3️⃣ 发送链接（可选）：\n"
         "   - 如需附加链接，请确保以 http:// 或 https:// 开头；不需要请回复 \"无\" 或发送 /skip_optional 跳过后面的所有可选项。\n\n"
         "4️⃣ 发送标题（可选）：\n"
@@ -325,15 +338,26 @@ async def show_media_welcome(update):
         "随时发送 /cancel 取消投稿。"
     )
 
-async def show_document_welcome(update):
+async def show_document_welcome(update, context: CallbackContext):
     """
     显示文档投稿欢迎信息
     
     Args:
         update: Telegram 更新对象
     """
-    file_validator = create_file_validator(ALLOWED_FILE_TYPES)
+    snapshot = get_snapshot(context)
+    allowed_file_types = str(snapshot.get("allowed_file_types") or "*")
+    allowed_tags = int(snapshot.get("allowed_tags", 30))
+    file_validator = create_file_validator(allowed_file_types)
     allowed_types_desc = file_validator.get_allowed_types_description()
+    tags_step = (
+        "3️⃣ 标签：\n"
+        "   - 当前不收集标签，将自动跳过\n\n"
+        if allowed_tags <= 0
+        else
+        "3️⃣ 发送标签（必选）：\n"
+        f"   - 最多{allowed_tags}个标签，用逗号分隔（例如：教程，资料，软件）。\n\n"
+    )
     await update.message.reply_text(
         "📮 欢迎使用文档投稿功能！请按照以下步骤提交：\n\n"
         "1️⃣ 发送文档文件（必选）：\n"
@@ -349,8 +373,7 @@ async def show_document_welcome(update):
         "     • 从相册选择后直接发送\n"
         "     • 直接发送视频/GIF\n"
         "   - 上传完毕后，请发送 /done_media，或发送 /skip_media 跳过此步骤。\n\n"
-        "3️⃣ 发送标签（必选）：\n"
-        "   - 最多30个标签，用逗号分隔（例如：教程，资料，软件）。\n\n"
+        f"{tags_step}"
         "4️⃣ 发送链接（可选）：\n"
         "   - 如需附加链接，请确保以 http:// 或 https:// 开头；不需要请回复 \"无\" 或发送 /skip_optional 跳过后面的所有可选项。\n\n"
         "5️⃣ 发送标题（可选）：\n"

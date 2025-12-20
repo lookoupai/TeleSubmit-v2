@@ -10,9 +10,9 @@ import logging
 from telegram import Update
 from telegram.ext import CallbackContext
 
-from config.settings import RATING_ENABLED, RATING_ALLOW_UPDATE
 from database.db_manager import get_db
 from ui.keyboards import Keyboards
+from utils import runtime_settings
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ async def handle_rating_callback(update: Update, context: CallbackContext):
     处理评分按钮回调
     callback_data 格式：rating_{subject_id}_{score}
     """
-    if not RATING_ENABLED:
+    if not runtime_settings.rating_enabled():
         # 功能关闭时给出友好提示
         await update.callback_query.answer("评分功能暂未启用")
         return
@@ -96,7 +96,7 @@ async def handle_rating_callback(update: Update, context: CallbackContext):
             else:
                 old_score = int(row["score"])
 
-                if not RATING_ALLOW_UPDATE:
+                if not runtime_settings.rating_allow_update():
                     await query.answer("你已经给这条内容评分过了", show_alert=True)
                 else:
                     if old_score == score:

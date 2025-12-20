@@ -22,6 +22,7 @@ from utils.helper_functions import (
     validate_state, 
     safe_send
 )
+from utils.submit_settings import get_snapshot
 from handlers.publish import publish_submission
 
 logger = logging.getLogger(__name__)
@@ -112,7 +113,24 @@ async def done_media(update: Update, context: CallbackContext) -> int:
         logger.error(f"检索媒体错误: {e}")
         await update.message.reply_text("❌ 内部错误，请稍后再试")
         return ConversationHandler.END
-    await update.message.reply_text("✅ 媒体接收完成，请发送标签（必选，最多30个，用逗号分隔，例如：明日方舟，原神）")
+    snapshot = get_snapshot(context)
+    allowed_tags = int(snapshot.get("allowed_tags", 30))
+    if allowed_tags <= 0:
+        try:
+            async with get_db() as conn:
+                c = await conn.cursor()
+                await c.execute("UPDATE submissions SET tags=? WHERE user_id=?", ("", user_id))
+        except Exception:
+            pass
+        await update.message.reply_text(
+            "✅ 媒体接收完成。\n\n"
+            "📌 当前不收集标签，将进入链接输入（可选）：\n"
+            "• 不需要请回复“无”或发送 /skip_optional\n"
+            "• 需要请以 http:// 或 https:// 开头"
+        )
+        return STATE['LINK']
+
+    await update.message.reply_text(f"✅ 媒体接收完成，请发送标签（必选，最多{allowed_tags}个，用逗号分隔，例如：明日方舟，原神）")
     return STATE['TAG']
 
 @validate_state(STATE['TAG'])
@@ -130,10 +148,15 @@ async def handle_tag(update: Update, context: CallbackContext) -> int:
     logger.info(f"处理标签输入，user_id: {update.effective_user.id}")
     user_id = update.effective_user.id
     raw_tags = update.message.text.strip()
-    success, processed_tags = process_tags(raw_tags)
-    if not success or not processed_tags:
-        await update.message.reply_text("❌ 标签格式错误，请重新输入（最多30个，用逗号分隔）")
-        return STATE['TAG']
+    snapshot = get_snapshot(context)
+    allowed_tags = int(snapshot.get("allowed_tags", 30))
+    if allowed_tags <= 0:
+        processed_tags = ""
+    else:
+        success, processed_tags = process_tags(raw_tags, allowed_tags)
+        if not success or not processed_tags:
+            await update.message.reply_text(f"❌ 标签格式错误，请重新输入（最多{allowed_tags}个，用逗号分隔）")
+            return STATE['TAG']
     try:
         async with get_db() as conn:
             c = await conn.cursor()
@@ -144,9 +167,15 @@ async def handle_tag(update: Update, context: CallbackContext) -> int:
         logger.error(f"标签保存错误: {e}")
         await update.message.reply_text("❌ 标签保存失败，请稍后再试")
         return ConversationHandler.END
-    await update.message.reply_text(
-        "✅ 标签已保存，请发送链接（可选，不需要请回复 “无” 或发送 /skip_optional 跳过后面的所有可选项 。需填写请以 http:// 或 https:// 开头）"
-    )
+    if allowed_tags <= 0:
+        await update.message.reply_text(
+            "✅ 当前不收集标签，已忽略标签输入。\n\n"
+            "请发送链接（可选，不需要请回复 “无” 或发送 /skip_optional 跳过后面的所有可选项 。需填写请以 http:// 或 https:// 开头）"
+        )
+    else:
+        await update.message.reply_text(
+            "✅ 标签已保存，请发送链接（可选，不需要请回复 “无” 或发送 /skip_optional 跳过后面的所有可选项 。需填写请以 http:// 或 https:// 开头）"
+        )
     return STATE['LINK']
 
 @validate_state(STATE['LINK'])

@@ -21,12 +21,10 @@ from config.settings import (
     CHANNEL_ID,
     NET_TIMEOUT,
     OWNER_ID,
-    NOTIFY_OWNER,
-    DUPLICATE_CHECK_ENABLED,
-    RATING_ENABLED,
 )
 from database.db_manager import get_db, cleanup_old_data
 from utils.helper_functions import build_caption, safe_send
+from utils.submit_settings import get_snapshot
 from utils.search_engine import get_search_engine, PostDocument
 from handlers.review_handlers import perform_review, save_fingerprint_after_publish
 from utils.rating_service import get_rating_service
@@ -46,6 +44,7 @@ async def save_published_post(
     rating_subject_id=None,
     rating_avg=None,
     rating_votes=None,
+    show_submitter=None,
 ):
     """
     保存已发布的帖子信息到数据库和搜索索引
@@ -77,7 +76,7 @@ async def save_published_post(
         tags = data['tags'] if 'tags' in data.keys() else ''
         
         # 构建说明
-        caption = build_caption(data)
+        caption = build_caption(data, show_submitter=show_submitter)
         
         # 提取信息 - 兼容 sqlite3.Row 对象
         title = data['title'] if data['title'] else ''
@@ -199,6 +198,10 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
         int: 会话结束状态
     """
     user_id = update.effective_user.id
+    snapshot = get_snapshot(context)
+    show_submitter = bool(snapshot.get("show_submitter", runtime_settings.bot_show_submitter()))
+    notify_owner = bool(snapshot.get("notify_owner", runtime_settings.bot_notify_owner()))
+    rating_enabled = bool(snapshot.get("rating_enabled", runtime_settings.rating_enabled()))
     try:
         async with get_db() as conn:
             c = await conn.cursor()
@@ -209,7 +212,7 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
             await update.message.reply_text("❌ 数据异常，请重新发送 /start")
             return ConversationHandler.END
 
-        caption = build_caption(data)
+        caption = build_caption(data, show_submitter=show_submitter)
         
         # 解析媒体和文档数据，增强型错误处理
         media_list = []
@@ -239,7 +242,7 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
         is_paid_ad = bool(context.user_data.get("paid_ad")) and runtime_settings.paid_ad_enabled()
 
         # === 审核流程：重复检测和 AI 审核 ===
-        if DUPLICATE_CHECK_ENABLED or runtime_settings.ai_review_enabled():
+        if runtime_settings.duplicate_check_enabled() or runtime_settings.ai_review_enabled():
             # 构建投稿数据用于审核
             submission_data = {
                 'text_content': text_content,
@@ -311,7 +314,7 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
 
         # 评分实体（可选）
         rating_subject_info = None
-        if RATING_ENABLED:
+        if rating_enabled:
             try:
                 rating_service = get_rating_service()
                 rating_subject_info = await rating_service.get_or_create_subject_from_submission(
@@ -400,10 +403,11 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
             rating_subject_id=rating_subject_id,
             rating_avg=rating_avg,
             rating_votes=rating_votes,
+            show_submitter=show_submitter,
         )
 
         # 为频道消息附加评分键盘
-        if RATING_ENABLED and rating_subject_info and rating_subject_id is not None:
+        if rating_enabled and rating_subject_info and rating_subject_id is not None:
             try:
                 rating_service = get_rating_service()
                 await rating_service.attach_rating_keyboard(
@@ -417,7 +421,7 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
                 logger.error(f"为消息附加评分键盘失败: {e}", exc_info=True)
 
         # 保存投稿指纹（用于重复检测）
-        if DUPLICATE_CHECK_ENABLED:
+        if runtime_settings.duplicate_check_enabled():
             try:
                 # 构建投稿数据
                 submission_data = {
@@ -452,9 +456,9 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
                 logger.error(f"保存投稿指纹失败: {e}")
 
         # 向所有者发送投稿通知
-        if NOTIFY_OWNER and OWNER_ID:
+        if notify_owner and OWNER_ID:
             # 记录详细的调试信息
-            logger.info(f"准备发送通知: NOTIFY_OWNER={NOTIFY_OWNER}, OWNER_ID={OWNER_ID}, 类型={type(OWNER_ID)}")
+            logger.info(f"准备发送通知: notify_owner={notify_owner}, OWNER_ID={OWNER_ID}, 类型={type(OWNER_ID)}")
             
             # 获取用户名信息
             username = None
@@ -534,7 +538,7 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
                 logger.error(f"处理通知过程中发生错误: 错误类型: {type(e)}, 详细信息: {str(e)}")
                 logger.error("异常追踪: ", exc_info=True)
         else:
-            logger.info(f"不发送通知: NOTIFY_OWNER={NOTIFY_OWNER}, OWNER_ID={OWNER_ID}")
+            logger.info(f"不发送通知: notify_owner={notify_owner}, OWNER_ID={OWNER_ID}")
         
     except Exception as e:
         logger.error(f"发布投稿失败: {e}")

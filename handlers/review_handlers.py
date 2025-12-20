@@ -12,8 +12,6 @@ from telegram.ext import ConversationHandler, CallbackContext
 from config.settings import (
     AI_REVIEW_NOTIFY_ADMIN_ON_REJECT,
     AI_REVIEW_NOTIFY_ADMIN_ON_DUPLICATE,
-    DUPLICATE_CHECK_ENABLED,
-    DUPLICATE_NOTIFY_USER,
     OWNER_ID,
     ADMIN_IDS,
 )
@@ -95,11 +93,16 @@ async def perform_review(
     content = _build_content_for_review(submission_data)
 
     # 1. 重复检测
-    if DUPLICATE_CHECK_ENABLED:
+    if runtime_settings.duplicate_check_enabled():
         dup_result = await _check_duplicate(user_id, username, content, user_bio)
         if dup_result.is_duplicate:
-            await _handle_duplicate_result(update, context, dup_result, user_info)
-            return (False, False, dup_result.message)
+            should_block = (
+                dup_result.duplicate_type == "rate_limit"
+                or runtime_settings.duplicate_auto_reject_duplicate()
+            )
+            await _handle_duplicate_result(update, context, dup_result, user_info, blocked=should_block)
+            if should_block:
+                return (False, False, dup_result.message)
 
     # 2. AI 审核
     if runtime_settings.ai_review_enabled() and not skip_ai_review:
@@ -160,14 +163,16 @@ async def _handle_duplicate_result(
     update: Update,
     context: CallbackContext,
     result: DuplicateResult,
-    user_info: dict
+    user_info: dict,
+    *,
+    blocked: bool = True,
 ):
     """处理重复检测结果"""
     user_id = user_info.get('user_id')
     username = user_info.get('username', '')
 
     # 通知用户
-    if DUPLICATE_NOTIFY_USER:
+    if blocked and runtime_settings.duplicate_notify_user_duplicate():
         if result.duplicate_type == 'rate_limit':
             message = (
                 "⚠️ 投稿频率超限\n\n"
@@ -188,10 +193,12 @@ async def _handle_duplicate_result(
 
     # 通知管理员
     if AI_REVIEW_NOTIFY_ADMIN_ON_DUPLICATE and ADMIN_IDS:
+        blocked_text = "是" if blocked else "否"
         admin_message = (
             "🔔 重复投稿检测通知\n\n"
             f"用户：@{username} (ID: {user_id})\n"
             f"类型：{result.duplicate_type}\n"
+            f"已拦截：{blocked_text}\n"
             f"相似度：{result.similarity_score:.0%}\n"
             f"详情：{result.message}"
         )
@@ -201,7 +208,10 @@ async def _handle_duplicate_result(
             except Exception as e:
                 logger.error(f"通知管理员 {admin_id} 失败: {e}")
 
-    logger.info(f"重复投稿被拦截: user_id={user_id}, type={result.duplicate_type}")
+    if blocked:
+        logger.info(f"重复投稿被拦截: user_id={user_id}, type={result.duplicate_type}")
+    else:
+        logger.info(f"重复投稿命中未拦截: user_id={user_id}, type={result.duplicate_type}")
 
 
 async def _handle_rejection(
@@ -486,7 +496,7 @@ async def save_fingerprint_after_publish(
     submission_id: int
 ):
     """发布成功后保存指纹"""
-    if not DUPLICATE_CHECK_ENABLED:
+    if not runtime_settings.duplicate_check_enabled():
         return
 
     try:

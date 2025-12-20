@@ -7,6 +7,7 @@ import asyncio
 import logging
 from functools import lru_cache, wraps
 from datetime import datetime
+from typing import Optional
 from telegram import Update, ReplyKeyboardRemove
 from telegram.ext import ConversationHandler, CallbackContext
 
@@ -29,7 +30,7 @@ CONFIG = {
 }
 
 @lru_cache(maxsize=128)
-def process_tags(raw_tags: str) -> tuple:
+def process_tags(raw_tags: str, allowed_tags: int = ALLOWED_TAGS) -> tuple:
     """
     处理标签字符串
     
@@ -42,7 +43,8 @@ def process_tags(raw_tags: str) -> tuple:
     try:
         # 使用预编译的正则表达式分割标签
         tags = [t.strip().lower() for t in TAG_SPLIT_PATTERN.split(raw_tags) if t.strip()]
-        tags = tags[:ALLOWED_TAGS]
+        limit = max(0, int(allowed_tags))
+        tags = tags[:limit]
         
         # 移除标签前的所有#号，然后统一添加一个#
         # 这样可以处理 ##tag, ###tag 等情况
@@ -75,7 +77,7 @@ def escape_markdown(text: str) -> str:
     escape_chars = r'\_*[]()~>#+-=|{}.!'
     return ''.join(f"\\{c}" if c in escape_chars else c for c in text)
 
-def build_caption(data) -> str:
+def build_caption(data, *, show_submitter: Optional[bool] = None) -> str:
     """
     构建媒体说明文本
     
@@ -103,8 +105,10 @@ def build_caption(data) -> str:
     def get_spoiler_part(spoiler: str) -> str:
         return "⚠️点击查看⚠️" if spoiler.lower() == "true" else ""
     
+    show_submitter_flag = SHOW_SUBMITTER if show_submitter is None else bool(show_submitter)
+
     def get_submitter_part(user_id: int) -> str:
-        if not SHOW_SUBMITTER:
+        if not show_submitter_flag:
             return ""
         
         # 获取保存的用户名，如果存在的话

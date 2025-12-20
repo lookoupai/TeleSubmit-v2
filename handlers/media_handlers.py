@@ -14,7 +14,8 @@ from utils.helper_functions import (
     get_submission_mode, parse_json_list
 )
 from utils.file_validator import create_file_validator
-from config.settings import ALLOWED_FILE_TYPES
+from utils.submit_settings import get_snapshot
+from utils import runtime_settings
 
 logger = logging.getLogger(__name__)
 
@@ -179,8 +180,25 @@ async def done_media(update: Update, context: CallbackContext) -> int:
                 await update.message.reply_text("⚠️ 请至少发送一个媒体文件")
                 return STATE['MEDIA']
                 
+        snapshot = get_snapshot(context)
+        allowed_tags = int(snapshot.get("allowed_tags", 30))
+        if allowed_tags <= 0:
+            try:
+                async with get_db() as conn:
+                    c = await conn.cursor()
+                    await c.execute("UPDATE submissions SET tags=? WHERE user_id=?", ("", user_id))
+            except Exception:
+                pass
+            await update.message.reply_text(
+                "✅ 媒体接收完成。\n\n"
+                "📌 当前不收集标签，将进入链接输入（可选）：\n"
+                "• 不需要请回复“无”或发送 /skip_optional\n"
+                "• 需要请以 http:// 或 https:// 开头"
+            )
+            return STATE['LINK']
+
         # 媒体验证通过，进入标签阶段
-        await update.message.reply_text("✅ 媒体接收完成，请发送标签（必选，最多30个，用逗号分隔，例如：明日方舟，原神）")
+        await update.message.reply_text(f"✅ 媒体接收完成，请发送标签（必选，最多{allowed_tags}个，用逗号分隔，例如：明日方舟，原神）")
         return STATE['TAG']
         
     except Exception as e:
@@ -220,8 +238,25 @@ async def skip_media(update: Update, context: CallbackContext) -> int:
                 await update.message.reply_text("⚠️ 在媒体投稿模式下，媒体文件是必选项。请上传至少一个媒体文件。")
                 return STATE['MEDIA']
                 
+        snapshot = get_snapshot(context)
+        allowed_tags = int(snapshot.get("allowed_tags", 30))
+        if allowed_tags <= 0:
+            try:
+                async with get_db() as conn:
+                    c = await conn.cursor()
+                    await c.execute("UPDATE submissions SET tags=? WHERE user_id=?", ("", user_id))
+            except Exception:
+                pass
+            await update.message.reply_text(
+                "✅ 已跳过媒体上传。\n\n"
+                "📌 当前不收集标签，将进入链接输入（可选）：\n"
+                "• 不需要请回复“无”或发送 /skip_optional\n"
+                "• 需要请以 http:// 或 https:// 开头"
+            )
+            return STATE['LINK']
+
         # 非媒体模式可以跳过
-        await update.message.reply_text("✅ 已跳过媒体上传，请发送标签（必选，最多30个，用逗号分隔，例如：明日方舟，原神）")
+        await update.message.reply_text(f"✅ 已跳过媒体上传，请发送标签（必选，最多{allowed_tags}个，用逗号分隔，例如：明日方舟，原神）")
         return STATE['TAG']
         
     except Exception as e:
@@ -314,7 +349,9 @@ async def switch_to_doc_mode(update: Update, context: CallbackContext) -> int:
             await conn.commit()
         
         # 3. 发送新的欢迎消息（简化版本）
-        file_validator = create_file_validator(ALLOWED_FILE_TYPES)
+        snapshot = get_snapshot(context)
+        allowed_file_types = str(snapshot.get("allowed_file_types") or runtime_settings.bot_allowed_file_types() or "*")
+        file_validator = create_file_validator(allowed_file_types)
         allowed_types_desc = file_validator.get_allowed_types_description()
         welcome_text = (
             "📮 欢迎使用文档投稿功能！请按照以下步骤提交：\n\n"

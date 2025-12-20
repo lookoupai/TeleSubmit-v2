@@ -12,12 +12,10 @@ from models.state import STATE
 from database.db_manager import get_db
 from utils.helper_functions import validate_state, safe_send, end_conversation_with_message, handle_conversation_error
 from utils.file_validator import create_file_validator
-from config.settings import ALLOWED_FILE_TYPES
+from utils.submit_settings import get_snapshot
+from utils import runtime_settings
 
 logger = logging.getLogger(__name__)
-
-# 创建全局文件类型验证器
-file_validator = create_file_validator(ALLOWED_FILE_TYPES)
 
 @validate_state(STATE['DOC'])
 async def handle_doc(update: Update, context: CallbackContext) -> int:
@@ -33,6 +31,9 @@ async def handle_doc(update: Update, context: CallbackContext) -> int:
     """
     logger.info(f"处理文档输入，user_id: {update.effective_user.id}")
     user_id = update.effective_user.id
+    snapshot = get_snapshot(context)
+    allowed_file_types = str(snapshot.get("allowed_file_types") or runtime_settings.bot_allowed_file_types() or "*")
+    file_validator = create_file_validator(allowed_file_types)
     
     if not update.message.document:
         logger.warning(f"收到非文档消息，但被路由到文档处理，user_id: {user_id}")
@@ -194,6 +195,9 @@ async def prompt_doc(update: Update, context: CallbackContext) -> int:
         int: 当前会话状态
     """
     # 获取允许的文件类型描述
+    snapshot = get_snapshot(context)
+    allowed_file_types = str(snapshot.get("allowed_file_types") or runtime_settings.bot_allowed_file_types() or "*")
+    file_validator = create_file_validator(allowed_file_types)
     allowed_types_desc = file_validator.get_allowed_types_description()
     
     await safe_send(

@@ -4,6 +4,7 @@
 """
 import logging
 import os
+from functools import lru_cache
 from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -169,5 +170,12 @@ def create_file_validator(allowed_types: str) -> FileTypeValidator:
     Returns:
         FileTypeValidator: 文件类型验证器实例
     """
-    return FileTypeValidator(allowed_types)
+    normalized = (allowed_types or "*").strip()
+    if not normalized:
+        normalized = "*"
+    return _get_cached_validator(normalized)
 
+
+@lru_cache(maxsize=32)
+def _get_cached_validator(allowed_types: str) -> FileTypeValidator:
+    return FileTypeValidator(allowed_types)

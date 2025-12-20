@@ -7,9 +7,9 @@ from datetime import datetime
 from telegram import Update, ReplyKeyboardRemove
 from telegram.ext import ConversationHandler, CallbackContext
 
-from config.settings import MIN_TEXT_LENGTH, MAX_TEXT_LENGTH
 from models.state import STATE
 from database.db_manager import get_db
+from utils.submit_settings import get_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -27,21 +27,25 @@ async def handle_text_content(update: Update, context: CallbackContext) -> int:
     """
     user_id = update.effective_user.id
     text_content = update.message.text
+    snapshot = get_snapshot(context)
+    min_len = int(snapshot.get("min_text_length", 10))
+    max_len = int(snapshot.get("max_text_length", 4000))
+    allowed_tags = int(snapshot.get("allowed_tags", 30))
 
     logger.info(f"收到纯文本投稿内容，user_id: {user_id}, 长度: {len(text_content)}")
 
     # 验证内容长度
-    if len(text_content) < MIN_TEXT_LENGTH:
+    if len(text_content) < min_len:
         await update.message.reply_text(
-            f"⚠️ 投稿内容太短，至少需要 {MIN_TEXT_LENGTH} 个字符。\n"
+            f"⚠️ 投稿内容太短，至少需要 {min_len} 个字符。\n"
             f"当前长度：{len(text_content)} 个字符\n\n"
             "请重新输入投稿内容："
         )
         return STATE['TEXT_CONTENT']
 
-    if len(text_content) > MAX_TEXT_LENGTH:
+    if len(text_content) > max_len:
         await update.message.reply_text(
-            f"⚠️ 投稿内容超过限制，最多 {MAX_TEXT_LENGTH} 个字符。\n"
+            f"⚠️ 投稿内容超过限制，最多 {max_len} 个字符。\n"
             f"当前长度：{len(text_content)} 个字符\n\n"
             "请缩短内容后重新输入："
         )
@@ -52,15 +56,25 @@ async def handle_text_content(update: Update, context: CallbackContext) -> int:
             c = await conn.cursor()
             # 保存文本内容
             await c.execute(
-                "UPDATE submissions SET text_content=? WHERE user_id=?",
-                (text_content, user_id)
+                "UPDATE submissions SET text_content=?, tags=? WHERE user_id=?",
+                (text_content, "", user_id)
             )
             await conn.commit()
+
+        if allowed_tags <= 0:
+            await update.message.reply_text(
+                f"✅ 已收到投稿内容（{len(text_content)} 字符）\n\n"
+                "📌 当前不收集标签，将进入链接输入（可选）：\n"
+                "• 不需要请回复 \"无\" 或发送 /skip_optional\n"
+                "• 需要请以 http:// 或 https:// 开头\n\n"
+                "随时发送 /cancel 取消投稿。"
+            )
+            return STATE['LINK']
 
         await update.message.reply_text(
             f"✅ 已收到投稿内容（{len(text_content)} 字符）\n\n"
             "📌 请输入标签（必填）：\n"
-            "• 最多30个标签，用逗号分隔\n"
+            f"• 最多{allowed_tags}个标签，用逗号分隔\n"
             "• 例如：接码,短信验证,虚拟号码\n\n"
             "随时发送 /cancel 取消投稿。"
         )
@@ -72,22 +86,35 @@ async def handle_text_content(update: Update, context: CallbackContext) -> int:
         return ConversationHandler.END
 
 
-async def show_text_welcome(update: Update):
+async def show_text_welcome(update: Update, context: CallbackContext):
     """
     显示纯文本投稿欢迎信息
 
     Args:
         update: Telegram 更新对象
     """
+    snapshot = get_snapshot(context)
+    min_len = int(snapshot.get("min_text_length", 10))
+    max_len = int(snapshot.get("max_text_length", 4000))
+    allowed_tags = int(snapshot.get("allowed_tags", 30))
+
+    tags_line = (
+        "2️⃣ 发送标签（可跳过）：\n"
+        "   - 当前不收集标签，将自动跳过此步骤\n\n"
+        if allowed_tags <= 0
+        else
+        "2️⃣ 发送标签（必填）：\n"
+        f"   - 最多{allowed_tags}个标签，用逗号分隔\n"
+        "   - 例如：接码,短信验证,虚拟号码\n\n"
+    )
+
     await update.message.reply_text(
         "📝 欢迎使用纯文本投稿功能！\n\n"
         "请按照以下步骤提交：\n\n"
         "1️⃣ 发送投稿内容（必填）：\n"
-        f"   - 字数限制：{MIN_TEXT_LENGTH} ~ {MAX_TEXT_LENGTH} 字符\n"
+        f"   - 字数限制：{min_len} ~ {max_len} 字符\n"
         "   - 请直接发送您的投稿文本\n\n"
-        "2️⃣ 发送标签（必填）：\n"
-        "   - 最多30个标签，用逗号分隔\n"
-        "   - 例如：接码,短信验证,虚拟号码\n\n"
+        f"{tags_line}"
         "3️⃣ 发送链接（可选）：\n"
         "   - 如需附加链接，请确保以 http:// 或 https:// 开头\n"
         "   - 不需要请回复 \"无\" 或发送 /skip_optional\n\n"

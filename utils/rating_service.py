@@ -11,10 +11,11 @@ from typing import Dict, Any, List, Optional, Tuple
 from urllib.parse import urlparse
 from datetime import datetime
 
-from config.settings import CHANNEL_ID, RATING_ENABLED
+from config.settings import CHANNEL_ID
 from database.db_manager import get_db
 from utils.feature_extractor import get_feature_extractor
 from ui.keyboards import Keyboards
+from utils import runtime_settings
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +78,7 @@ class RatingService:
         Returns:
             dict: {subject_id, avg_score, vote_count} 或 None（未能识别实体）
         """
-        if not RATING_ENABLED:
+        if not runtime_settings.rating_enabled():
             return None
 
         try:
@@ -118,7 +119,7 @@ class RatingService:
             avg_score: 当前平均分
             vote_count: 评分人数
         """
-        if not RATING_ENABLED:
+        if not runtime_settings.rating_enabled():
             return
 
         try:
@@ -365,4 +366,3 @@ def get_rating_service() -> RatingService:
     if _rating_service is None:
         _rating_service = RatingService()
     return _rating_service
-

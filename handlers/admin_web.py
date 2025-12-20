@@ -130,16 +130,16 @@ def _html_page(*, title: str, body: str) -> web.Response:
   <header>
     <div class="title">{html.escape(ADMIN_WEB_TITLE)}</div>
     <div class="meta">服务器时间：{html.escape(_now_text())}</div>
-    <div class="nav" style="margin-left:auto">
-      <a href="{ADMIN_WEB_PATH}">首页</a>
-      <a href="{ADMIN_WEB_PATH}/schedule">定时发布</a>
-      <a href="{ADMIN_WEB_PATH}/slots">广告位</a>
-      <a href="{ADMIN_WEB_PATH}/ads">广告参数</a>
-      <a href="{ADMIN_WEB_PATH}/ai">AI审核</a>
-      <a href="{ADMIN_WEB_PATH}/duplicate">重复检测</a>
-      <a href="{ADMIN_WEB_PATH}/logout">退出</a>
-    </div>
-  </header>
+	    <div class="nav" style="margin-left:auto">
+	      <a href="{ADMIN_WEB_PATH}">首页</a>
+	      <a href="{ADMIN_WEB_PATH}/submit">投稿设置</a>
+	      <a href="{ADMIN_WEB_PATH}/schedule">定时发布</a>
+	      <a href="{ADMIN_WEB_PATH}/slots">广告位</a>
+	      <a href="{ADMIN_WEB_PATH}/ads">广告参数</a>
+	      <a href="{ADMIN_WEB_PATH}/ai">AI审核</a>
+	      <a href="{ADMIN_WEB_PATH}/logout">退出</a>
+	    </div>
+	  </header>
   <main>
     {body}
   </main>
@@ -187,18 +187,18 @@ async def index(request: web.Request) -> web.Response:
     _require_auth(request)
     base = ADMIN_WEB_PATH.rstrip("/")
     body = f"""
-<div class="card">
-  <h2 style="margin-top:0">概览</h2>
-  <div class="row">
-    <a href="{base}/schedule"><button>管理定时发布</button></a>
-    <a href="{base}/slots"><button>管理广告位</button></a>
-    <a href="{base}/ads"><button>管理广告参数</button></a>
-    <a href="{base}/ai"><button>管理 AI 审核</button></a>
-    <a href="{base}/duplicate"><button>管理重复检测</button></a>
-  </div>
-  <p style="opacity:.75;margin-bottom:0">本后台仅管理已落库的热更新项；修改 <code>config.ini</code> 类配置仍需要重启生效。</p>
-</div>
-"""
+	<div class="card">
+	  <h2 style="margin-top:0">概览</h2>
+	  <div class="row">
+	    <a href="{base}/submit"><button>投稿设置</button></a>
+	    <a href="{base}/schedule"><button>管理定时发布</button></a>
+	    <a href="{base}/slots"><button>管理广告位</button></a>
+	    <a href="{base}/ads"><button>管理广告参数</button></a>
+	    <a href="{base}/ai"><button>管理 AI 审核</button></a>
+	  </div>
+	  <p style="opacity:.75;margin-bottom:0">本后台仅管理已落库的热更新项；修改 <code>config.ini</code> 类配置仍需要重启生效。</p>
+	</div>
+	"""
     return _html_page(title="首页", body=body)
 
 
@@ -533,58 +533,311 @@ async def ai_post(request: web.Request) -> web.Response:
     raise web.HTTPFound(location=f"{ADMIN_WEB_PATH}/ai")
 
 
-async def duplicate_get(request: web.Request) -> web.Response:
+def _bool_selected(v: bool, expected: bool) -> str:
+    return "selected" if bool(v) == bool(expected) else ""
+
+
+async def submit_get(request: web.Request) -> web.Response:
     _require_auth(request)
 
     def _src(key: str) -> str:
         return "DB" if runtime_settings.get_raw(key) is not None else "config.ini"
 
-    window_days = int(runtime_settings.duplicate_check_window_days())
+    min_len = int(runtime_settings.bot_min_text_length())
+    max_len = int(runtime_settings.bot_max_text_length())
+    allowed_tags = int(runtime_settings.bot_allowed_tags())
+    allowed_file_types = str(runtime_settings.bot_allowed_file_types() or "").strip() or "*"
+    show_submitter = bool(runtime_settings.bot_show_submitter())
+    notify_owner = bool(runtime_settings.bot_notify_owner())
+
+    dup_enabled = bool(runtime_settings.duplicate_check_enabled())
+    dup_window_days = int(runtime_settings.duplicate_check_window_days())
+    dup_threshold = float(runtime_settings.duplicate_similarity_threshold())
+    dup_check_urls = bool(runtime_settings.duplicate_check_urls())
+    dup_check_contacts = bool(runtime_settings.duplicate_check_contacts())
+    dup_check_tg_links = bool(runtime_settings.duplicate_check_tg_links())
+    dup_check_user_bio = bool(runtime_settings.duplicate_check_user_bio())
+    dup_check_content_hash = bool(runtime_settings.duplicate_check_content_hash())
+    dup_auto_reject = bool(runtime_settings.duplicate_auto_reject_duplicate())
+    dup_notify_user = bool(runtime_settings.duplicate_notify_user_duplicate())
+
+    rate_enabled = bool(runtime_settings.rate_limit_enabled())
+    rate_count = int(runtime_settings.rate_limit_count())
+    rate_window_hours = int(runtime_settings.rate_limit_window_hours())
+
+    rating_enabled = bool(runtime_settings.rating_enabled())
+    rating_allow_update = bool(runtime_settings.rating_allow_update())
+
     body = f"""
 <div class="card">
-  <h2 style="margin-top:0">重复检测（热更新）</h2>
-  <div class="row">
-    <span class="pill">window_days: {str(window_days)}</span>
-  </div>
-  <p style="opacity:.75;margin:10px 0 0">
-    说明：此设置影响“重复检测查询窗口”和用户端提示文案；保存后立即生效。仅对启用了重复检测（<code>DUPLICATE_CHECK.ENABLED</code>）的场景有效。
-  </p>
+  <h2 style="margin-top:0">投稿设置（热更新）</h2>
+  <p style="opacity:.75;margin:0">保存后立即生效；多实例部署可能存在短暂延迟，取决于各实例刷新策略。</p>
 </div>
 
 <div class="card">
-  <h3 style="margin-top:0">修改配置</h3>
-  <form method="post" action="{ADMIN_WEB_PATH}/duplicate">
+  <form method="post" action="{ADMIN_WEB_PATH}/submit">
+    <input type="hidden" name="action" value="save" />
+
+    <h3 style="margin-top:0" id="basic">基础限制</h3>
     <div class="grid">
       <div>
-        <label>检测时间窗口（天）（来源：{_src(runtime_settings.KEY_DUPLICATE_CHECK_WINDOW_DAYS)}）</label>
-        <input type="text" name="duplicate_window_days" value="{html.escape(str(window_days))}" />
+        <label>最小字数（来源：{_src(runtime_settings.KEY_BOT_MIN_TEXT_LENGTH)}）</label>
+        <input type="text" name="bot_min_text_length" value="{html.escape(str(min_len))}" />
+      </div>
+      <div>
+        <label>最大字数（来源：{_src(runtime_settings.KEY_BOT_MAX_TEXT_LENGTH)}）</label>
+        <input type="text" name="bot_max_text_length" value="{html.escape(str(max_len))}" />
+      </div>
+      <div>
+        <label>最大标签数（0=不收集）（来源：{_src(runtime_settings.KEY_BOT_ALLOWED_TAGS)}）</label>
+        <input type="text" name="bot_allowed_tags" value="{html.escape(str(allowed_tags))}" />
+      </div>
+      <div>
+        <label>允许文件类型（* 或逗号分隔扩展名/MIME）（来源：{_src(runtime_settings.KEY_BOT_ALLOWED_FILE_TYPES)}）</label>
+        <input type="text" name="bot_allowed_file_types" value="{html.escape(str(allowed_file_types))}" />
+      </div>
+      <div>
+        <label>显示投稿人（来源：{_src(runtime_settings.KEY_BOT_SHOW_SUBMITTER)}）</label>
+        <select name="bot_show_submitter">
+          <option value="1" {_bool_selected(show_submitter, True)}>开启</option>
+          <option value="0" {_bool_selected(show_submitter, False)}>关闭</option>
+        </select>
+      </div>
+      <div>
+        <label>通知所有者（来源：{_src(runtime_settings.KEY_BOT_NOTIFY_OWNER)}）</label>
+        <select name="bot_notify_owner">
+          <option value="1" {_bool_selected(notify_owner, True)}>开启</option>
+          <option value="0" {_bool_selected(notify_owner, False)}>关闭</option>
+        </select>
       </div>
     </div>
+
+    <div style="height:14px"></div>
+
+    <h3 style="margin:0 0 8px" id="duplicate">重复检测 & 频率限制</h3>
+    <div class="grid">
+      <div>
+        <label>启用重复检测（来源：{_src(runtime_settings.KEY_DUPLICATE_CHECK_ENABLED)}）</label>
+        <select name="dup_enabled">
+          <option value="1" {_bool_selected(dup_enabled, True)}>开启</option>
+          <option value="0" {_bool_selected(dup_enabled, False)}>关闭</option>
+        </select>
+      </div>
+      <div>
+        <label>检测窗口（天）（来源：{_src(runtime_settings.KEY_DUPLICATE_CHECK_WINDOW_DAYS)}）</label>
+        <input type="text" name="dup_window_days" value="{html.escape(str(dup_window_days))}" />
+      </div>
+      <div>
+        <label>相似度阈值（0~1）（来源：{_src(runtime_settings.KEY_DUPLICATE_SIMILARITY_THRESHOLD)}）</label>
+        <input type="text" name="dup_similarity_threshold" value="{html.escape(f'{dup_threshold:.3f}')}" />
+      </div>
+      <div>
+        <label>URL 检测（来源：{_src(runtime_settings.KEY_DUPLICATE_CHECK_URLS)}）</label>
+        <select name="dup_check_urls">
+          <option value="1" {_bool_selected(dup_check_urls, True)}>开启</option>
+          <option value="0" {_bool_selected(dup_check_urls, False)}>关闭</option>
+        </select>
+      </div>
+      <div>
+        <label>联系方式检测（来源：{_src(runtime_settings.KEY_DUPLICATE_CHECK_CONTACTS)}）</label>
+        <select name="dup_check_contacts">
+          <option value="1" {_bool_selected(dup_check_contacts, True)}>开启</option>
+          <option value="0" {_bool_selected(dup_check_contacts, False)}>关闭</option>
+        </select>
+      </div>
+      <div>
+        <label>TG 链接/用户名检测（来源：{_src(runtime_settings.KEY_DUPLICATE_CHECK_TG_LINKS)}）</label>
+        <select name="dup_check_tg_links">
+          <option value="1" {_bool_selected(dup_check_tg_links, True)}>开启</option>
+          <option value="0" {_bool_selected(dup_check_tg_links, False)}>关闭</option>
+        </select>
+      </div>
+      <div>
+        <label>个人签名检测（来源：{_src(runtime_settings.KEY_DUPLICATE_CHECK_USER_BIO)}）</label>
+        <select name="dup_check_user_bio">
+          <option value="1" {_bool_selected(dup_check_user_bio, True)}>开启</option>
+          <option value="0" {_bool_selected(dup_check_user_bio, False)}>关闭</option>
+        </select>
+      </div>
+      <div>
+        <label>内容相似度检测（来源：{_src(runtime_settings.KEY_DUPLICATE_CHECK_CONTENT_HASH)}）</label>
+        <select name="dup_check_content_hash">
+          <option value="1" {_bool_selected(dup_check_content_hash, True)}>开启</option>
+          <option value="0" {_bool_selected(dup_check_content_hash, False)}>关闭</option>
+        </select>
+      </div>
+      <div>
+        <label>自动拒绝重复（来源：{_src(runtime_settings.KEY_DUPLICATE_AUTO_REJECT)}）</label>
+        <select name="dup_auto_reject">
+          <option value="1" {_bool_selected(dup_auto_reject, True)}>开启</option>
+          <option value="0" {_bool_selected(dup_auto_reject, False)}>关闭</option>
+        </select>
+      </div>
+      <div>
+        <label>通知用户重复原因（来源：{_src(runtime_settings.KEY_DUPLICATE_NOTIFY_USER)}）</label>
+        <select name="dup_notify_user">
+          <option value="1" {_bool_selected(dup_notify_user, True)}>开启</option>
+          <option value="0" {_bool_selected(dup_notify_user, False)}>关闭</option>
+        </select>
+      </div>
+    </div>
+
+    <div style="height:10px"></div>
+    <div class="grid">
+      <div>
+        <label>启用频率限制（来源：{_src(runtime_settings.KEY_RATE_LIMIT_ENABLED)}）</label>
+        <select name="rate_enabled">
+          <option value="1" {_bool_selected(rate_enabled, True)}>开启</option>
+          <option value="0" {_bool_selected(rate_enabled, False)}>关闭</option>
+        </select>
+      </div>
+      <div>
+        <label>窗口内最多投稿次数（来源：{_src(runtime_settings.KEY_RATE_LIMIT_COUNT)}）</label>
+        <input type="text" name="rate_count" value="{html.escape(str(rate_count))}" />
+      </div>
+      <div>
+        <label>窗口时长（小时）（来源：{_src(runtime_settings.KEY_RATE_LIMIT_WINDOW_HOURS)}）</label>
+        <input type="text" name="rate_window_hours" value="{html.escape(str(rate_window_hours))}" />
+      </div>
+    </div>
+
+    <div style="height:14px"></div>
+    <h3 style="margin:0 0 8px" id="rating">评分</h3>
+    <div class="grid">
+      <div>
+        <label>启用评分（来源：{_src(runtime_settings.KEY_RATING_ENABLED)}）</label>
+        <select name="rating_enabled">
+          <option value="1" {_bool_selected(rating_enabled, True)}>开启</option>
+          <option value="0" {_bool_selected(rating_enabled, False)}>关闭</option>
+        </select>
+      </div>
+      <div>
+        <label>允许修改评分（来源：{_src(runtime_settings.KEY_RATING_ALLOW_UPDATE)}）</label>
+        <select name="rating_allow_update">
+          <option value="1" {_bool_selected(rating_allow_update, True)}>开启</option>
+          <option value="0" {_bool_selected(rating_allow_update, False)}>关闭</option>
+        </select>
+      </div>
+    </div>
+
     <div style="height:12px"></div>
     <button type="submit">保存</button>
+    <button type="submit" name="action" value="clear" class="danger">清除 DB 覆盖（回退 config.ini）</button>
   </form>
 </div>
 """
-    return _html_page(title="重复检测", body=body)
+    return _html_page(title="投稿设置", body=body)
+
+
+async def submit_post(request: web.Request) -> web.Response:
+    _require_auth(request)
+    form = await request.post()
+
+    action = str(form.get("action") or "save").strip().lower()
+    keys_all = [
+        runtime_settings.KEY_BOT_MIN_TEXT_LENGTH,
+        runtime_settings.KEY_BOT_MAX_TEXT_LENGTH,
+        runtime_settings.KEY_BOT_ALLOWED_TAGS,
+        runtime_settings.KEY_BOT_ALLOWED_FILE_TYPES,
+        runtime_settings.KEY_BOT_SHOW_SUBMITTER,
+        runtime_settings.KEY_BOT_NOTIFY_OWNER,
+        runtime_settings.KEY_DUPLICATE_CHECK_ENABLED,
+        runtime_settings.KEY_DUPLICATE_CHECK_WINDOW_DAYS,
+        runtime_settings.KEY_DUPLICATE_SIMILARITY_THRESHOLD,
+        runtime_settings.KEY_DUPLICATE_CHECK_URLS,
+        runtime_settings.KEY_DUPLICATE_CHECK_CONTACTS,
+        runtime_settings.KEY_DUPLICATE_CHECK_TG_LINKS,
+        runtime_settings.KEY_DUPLICATE_CHECK_USER_BIO,
+        runtime_settings.KEY_DUPLICATE_CHECK_CONTENT_HASH,
+        runtime_settings.KEY_DUPLICATE_AUTO_REJECT,
+        runtime_settings.KEY_DUPLICATE_NOTIFY_USER,
+        runtime_settings.KEY_RATE_LIMIT_ENABLED,
+        runtime_settings.KEY_RATE_LIMIT_COUNT,
+        runtime_settings.KEY_RATE_LIMIT_WINDOW_HOURS,
+        runtime_settings.KEY_RATING_ENABLED,
+        runtime_settings.KEY_RATING_ALLOW_UPDATE,
+    ]
+
+    if action == "clear":
+        await runtime_settings.unset_many(keys=keys_all)
+        raise web.HTTPFound(location=f"{ADMIN_WEB_PATH}/submit")
+
+    def _t(name: str) -> str:
+        return str(form.get(name) or "").strip()
+
+    try:
+        min_len = int(_t("bot_min_text_length") or "0")
+        max_len = int(_t("bot_max_text_length") or "0")
+        runtime_settings.validate_bot_text_length(min_len=min_len, max_len=max_len)
+
+        allowed_tags = int(_t("bot_allowed_tags") or "0")
+        runtime_settings.validate_bot_allowed_tags(allowed_tags)
+
+        allowed_file_types = _t("bot_allowed_file_types") or "*"
+        runtime_settings.validate_bot_allowed_file_types(allowed_file_types)
+
+        show_submitter = _t("bot_show_submitter") == "1"
+        notify_owner = _t("bot_notify_owner") == "1"
+
+        dup_enabled = _t("dup_enabled") == "1"
+        dup_window_days = int(_t("dup_window_days") or "0")
+        runtime_settings.validate_duplicate_check_window_days(dup_window_days)
+
+        dup_similarity_threshold = float(_t("dup_similarity_threshold") or "0")
+        runtime_settings.validate_duplicate_similarity_threshold(dup_similarity_threshold)
+
+        dup_check_urls = _t("dup_check_urls") == "1"
+        dup_check_contacts = _t("dup_check_contacts") == "1"
+        dup_check_tg_links = _t("dup_check_tg_links") == "1"
+        dup_check_user_bio = _t("dup_check_user_bio") == "1"
+        dup_check_content_hash = _t("dup_check_content_hash") == "1"
+        dup_auto_reject = _t("dup_auto_reject") == "1"
+        dup_notify_user = _t("dup_notify_user") == "1"
+
+        rate_enabled = _t("rate_enabled") == "1"
+        rate_count = int(_t("rate_count") or "0")
+        rate_window_hours = int(_t("rate_window_hours") or "0")
+        runtime_settings.validate_rate_limit(count=rate_count, window_hours=rate_window_hours)
+
+        rating_enabled = _t("rating_enabled") == "1"
+        rating_allow_update = _t("rating_allow_update") == "1"
+    except Exception as e:
+        return _html_page(title="保存失败", body=f"<div class='card'><h2 style='margin-top:0'>保存失败</h2><p>{html.escape(str(e))}</p></div>")
+
+    await runtime_settings.set_many(values={
+        runtime_settings.KEY_BOT_MIN_TEXT_LENGTH: str(min_len),
+        runtime_settings.KEY_BOT_MAX_TEXT_LENGTH: str(max_len),
+        runtime_settings.KEY_BOT_ALLOWED_TAGS: str(allowed_tags),
+        runtime_settings.KEY_BOT_ALLOWED_FILE_TYPES: str(allowed_file_types).strip(),
+        runtime_settings.KEY_BOT_SHOW_SUBMITTER: "1" if show_submitter else "0",
+        runtime_settings.KEY_BOT_NOTIFY_OWNER: "1" if notify_owner else "0",
+        runtime_settings.KEY_DUPLICATE_CHECK_ENABLED: "1" if dup_enabled else "0",
+        runtime_settings.KEY_DUPLICATE_CHECK_WINDOW_DAYS: str(dup_window_days),
+        runtime_settings.KEY_DUPLICATE_SIMILARITY_THRESHOLD: str(dup_similarity_threshold),
+        runtime_settings.KEY_DUPLICATE_CHECK_URLS: "1" if dup_check_urls else "0",
+        runtime_settings.KEY_DUPLICATE_CHECK_CONTACTS: "1" if dup_check_contacts else "0",
+        runtime_settings.KEY_DUPLICATE_CHECK_TG_LINKS: "1" if dup_check_tg_links else "0",
+        runtime_settings.KEY_DUPLICATE_CHECK_USER_BIO: "1" if dup_check_user_bio else "0",
+        runtime_settings.KEY_DUPLICATE_CHECK_CONTENT_HASH: "1" if dup_check_content_hash else "0",
+        runtime_settings.KEY_DUPLICATE_AUTO_REJECT: "1" if dup_auto_reject else "0",
+        runtime_settings.KEY_DUPLICATE_NOTIFY_USER: "1" if dup_notify_user else "0",
+        runtime_settings.KEY_RATE_LIMIT_ENABLED: "1" if rate_enabled else "0",
+        runtime_settings.KEY_RATE_LIMIT_COUNT: str(rate_count),
+        runtime_settings.KEY_RATE_LIMIT_WINDOW_HOURS: str(rate_window_hours),
+        runtime_settings.KEY_RATING_ENABLED: "1" if rating_enabled else "0",
+        runtime_settings.KEY_RATING_ALLOW_UPDATE: "1" if rating_allow_update else "0",
+    })
+    raise web.HTTPFound(location=f"{ADMIN_WEB_PATH}/submit")
+
+
+async def duplicate_get(request: web.Request) -> web.Response:
+    _require_auth(request)
+    raise web.HTTPFound(location=f"{ADMIN_WEB_PATH}/submit#duplicate")
 
 
 async def duplicate_post(request: web.Request) -> web.Response:
     _require_auth(request)
-    form = await request.post()
-    raw_days = str(form.get("duplicate_window_days") or "").strip()
-    try:
-        days = int(raw_days)
-        runtime_settings.validate_duplicate_check_window_days(days)
-    except Exception as e:
-        return _html_page(
-            title="保存失败",
-            body=f"<div class='card'><h2 style='margin-top:0'>保存失败</h2><p>{html.escape(str(e))}</p></div>",
-        )
-
-    await runtime_settings.set_many(values={
-        runtime_settings.KEY_DUPLICATE_CHECK_WINDOW_DAYS: str(days),
-    })
-    raise web.HTTPFound(location=f"{ADMIN_WEB_PATH}/duplicate")
+    raise web.HTTPFound(location=f"{ADMIN_WEB_PATH}/submit#duplicate")
 
 
 async def schedule_get(request: web.Request) -> web.Response:
@@ -923,6 +1176,8 @@ def build_admin_routes() -> List[Tuple[str, str, Any]]:
         ("GET", f"{base}/login", login_get),
         ("POST", f"{base}/login", login_post),
         ("GET", f"{base}/logout", logout),
+        ("GET", f"{base}/submit", submit_get),
+        ("POST", f"{base}/submit", submit_post),
         ("GET", f"{base}/schedule", schedule_get),
         ("POST", f"{base}/schedule", schedule_post),
         ("GET", f"{base}/slots", slots_get),

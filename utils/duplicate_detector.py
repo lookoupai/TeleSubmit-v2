@@ -16,19 +16,6 @@ from utils.feature_extractor import (
     FINGERPRINT_VERSION
 )
 from utils import runtime_settings
-from config.settings import (
-    DUPLICATE_CHECK_ENABLED,
-    DUPLICATE_SIMILARITY_THRESHOLD,
-    DUPLICATE_CHECK_USER_ID,
-    DUPLICATE_CHECK_URLS,
-    DUPLICATE_CHECK_CONTACTS,
-    DUPLICATE_CHECK_TG_LINKS,
-    DUPLICATE_CHECK_USER_BIO,
-    DUPLICATE_CHECK_CONTENT_HASH,
-    RATE_LIMIT_ENABLED,
-    RATE_LIMIT_COUNT,
-    RATE_LIMIT_WINDOW_HOURS
-)
 
 logger = logging.getLogger(__name__)
 
@@ -53,11 +40,13 @@ class DuplicateDetector:
     """重复投稿检测器"""
 
     def __init__(self):
-        self.threshold = DUPLICATE_SIMILARITY_THRESHOLD
         self.extractor = get_feature_extractor()
 
     def _check_window_seconds(self) -> int:
         return int(runtime_settings.duplicate_check_window_days()) * 86400
+
+    def _threshold(self) -> float:
+        return float(runtime_settings.duplicate_similarity_threshold())
 
     async def check(self, fingerprint: SubmissionFingerprint) -> DuplicateResult:
         """
@@ -69,13 +58,13 @@ class DuplicateDetector:
         Returns:
             DuplicateResult: 检测结果
         """
-        if not DUPLICATE_CHECK_ENABLED:
+        if not runtime_settings.duplicate_check_enabled():
             return DuplicateResult(is_duplicate=False)
 
         cutoff_time = time.time() - self._check_window_seconds()
 
         # 1. 检查频率限制
-        if RATE_LIMIT_ENABLED:
+        if runtime_settings.rate_limit_enabled():
             rate_result = await self._check_rate_limit(fingerprint.user_id)
             if rate_result.is_duplicate:
                 return rate_result
@@ -86,13 +75,13 @@ class DuplicateDetector:
             return exact_result
 
         # 3. 模糊匹配检测（内容相似度）
-        if DUPLICATE_CHECK_CONTENT_HASH:
+        if runtime_settings.duplicate_check_content_hash():
             fuzzy_result = await self._check_fuzzy_matches(fingerprint, cutoff_time)
             if fuzzy_result.is_duplicate:
                 return fuzzy_result
 
         # 4. 关联检测（用户签名特征）
-        if DUPLICATE_CHECK_USER_BIO:
+        if runtime_settings.duplicate_check_user_bio():
             related_result = await self._check_related_submissions(fingerprint, cutoff_time)
             if related_result.is_duplicate:
                 return related_result
@@ -101,7 +90,9 @@ class DuplicateDetector:
 
     async def _check_rate_limit(self, user_id: int) -> DuplicateResult:
         """检查投稿频率限制"""
-        window_seconds = RATE_LIMIT_WINDOW_HOURS * 3600
+        window_hours = int(runtime_settings.rate_limit_window_hours())
+        limit_count = int(runtime_settings.rate_limit_count())
+        window_seconds = window_hours * 3600
         cutoff_time = time.time() - window_seconds
 
         try:
@@ -114,15 +105,15 @@ class DuplicateDetector:
                 row = await cursor.fetchone()
                 count = row['count'] if row else 0
 
-                if count >= RATE_LIMIT_COUNT:
-                    logger.info(f"用户 {user_id} 触发频率限制: {count}/{RATE_LIMIT_COUNT} "
-                              f"(窗口: {RATE_LIMIT_WINDOW_HOURS}小时)")
+                if count >= limit_count:
+                    logger.info(f"用户 {user_id} 触发频率限制: {count}/{limit_count} "
+                              f"(窗口: {window_hours}小时)")
                     return DuplicateResult(
                         is_duplicate=True,
                         duplicate_type='rate_limit',
                         matched_features=[],
                         similarity_score=1.0,
-                        message=f"您在 {RATE_LIMIT_WINDOW_HOURS} 小时内已投稿 {count} 次，已达到上限 {RATE_LIMIT_COUNT} 次"
+                        message=f"您在 {window_hours} 小时内已投稿 {count} 次，已达到上限 {limit_count} 次"
                     )
         except Exception as e:
             logger.error(f"检查频率限制失败: {e}")
@@ -163,14 +154,14 @@ class DuplicateDetector:
                     existing_features[key] = (row['id'], row['submit_time'])
 
                 # 检查 URL 匹配
-                if DUPLICATE_CHECK_URLS:
+                if runtime_settings.duplicate_check_urls():
                     for url in fingerprint.urls:
                         key = ('url', url)
                         if key in existing_features:
                             matched_features.append(key)
 
                 # 检查 Telegram 链接匹配
-                if DUPLICATE_CHECK_TG_LINKS:
+                if runtime_settings.duplicate_check_tg_links():
                     for tg_link in fingerprint.tg_links:
                         key = ('tg_link', tg_link)
                         if key in existing_features:
@@ -182,7 +173,7 @@ class DuplicateDetector:
                             matched_features.append(key)
 
                 # 检查联系方式匹配
-                if DUPLICATE_CHECK_CONTACTS:
+                if runtime_settings.duplicate_check_contacts():
                     for phone in fingerprint.phone_numbers:
                         key = ('phone', phone)
                         if key in existing_features:
@@ -254,7 +245,7 @@ class DuplicateDetector:
                     # 距离 <= 3 通常认为是相似内容
                     similarity = 1 - (distance / 64)
 
-                    if similarity >= self.threshold:
+                    if similarity >= self._threshold():
                         logger.info(f"检测到模糊匹配: user_id={fingerprint.user_id}, "
                                   f"similarity={similarity:.2f}, distance={distance}")
 

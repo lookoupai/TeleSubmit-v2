@@ -10,6 +10,7 @@ from telegram.ext import ConversationHandler, CallbackContext
 from models.state import STATE
 from database.db_manager import get_db
 from utils.helper_functions import validate_state, process_tags
+from utils.submit_settings import get_snapshot
 from handlers.publish import publish_submission
 
 logger = logging.getLogger(__name__)
@@ -29,10 +30,15 @@ async def handle_tag(update: Update, context: CallbackContext) -> int:
     logger.info(f"处理标签输入，user_id: {update.effective_user.id}")
     user_id = update.effective_user.id
     raw_tags = update.message.text.strip()
-    success, processed_tags = process_tags(raw_tags)
-    if not success or not processed_tags:
-        await update.message.reply_text("❌ 标签格式错误，请重新输入（最多30个，用逗号分隔）")
-        return STATE['TAG']
+    snapshot = get_snapshot(context)
+    allowed_tags = int(snapshot.get("allowed_tags", 30))
+    if allowed_tags <= 0:
+        processed_tags = ""
+    else:
+        success, processed_tags = process_tags(raw_tags, allowed_tags)
+        if not success or not processed_tags:
+            await update.message.reply_text(f"❌ 标签格式错误，请重新输入（最多{allowed_tags}个，用逗号分隔）")
+            return STATE['TAG']
     try:
         async with get_db() as conn:
             c = await conn.cursor()
@@ -43,9 +49,15 @@ async def handle_tag(update: Update, context: CallbackContext) -> int:
         logger.error(f"标签保存错误: {e}")
         await update.message.reply_text("❌ 标签保存失败，请稍后再试")
         return ConversationHandler.END
-    await update.message.reply_text(
-        "✅ 标签已保存，请发送链接（可选，如无需请回复\"无\"，需填写请以 http:// 或 https:// 开头，或发送 /skip_optional 跳过后续所有可选项）"
-    )
+    if allowed_tags <= 0:
+        await update.message.reply_text(
+            "✅ 当前不收集标签，已忽略标签输入。\n\n"
+            "请发送链接（可选，如无需请回复\"无\"，需填写请以 http:// 或 https:// 开头，或发送 /skip_optional 跳过后续所有可选项）"
+        )
+    else:
+        await update.message.reply_text(
+            "✅ 标签已保存，请发送链接（可选，如无需请回复\"无\"，需填写请以 http:// 或 https:// 开头，或发送 /skip_optional 跳过后续所有可选项）"
+        )
     return STATE['LINK']
 
 @validate_state(STATE['LINK'])

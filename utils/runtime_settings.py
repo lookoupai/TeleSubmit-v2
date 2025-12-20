@@ -59,7 +59,33 @@ KEY_AI_REVIEW_POLICY_TEXT = "ai_review.policy_text"
 KEY_AD_RISK_SYSTEM_PROMPT = "ad_risk.system_prompt"
 KEY_AD_RISK_PROMPT_TEMPLATE = "ad_risk.prompt_template"
 
+# 投稿配置（热更新）
+KEY_BOT_MIN_TEXT_LENGTH = "bot.min_text_length"
+KEY_BOT_MAX_TEXT_LENGTH = "bot.max_text_length"
+KEY_BOT_ALLOWED_TAGS = "bot.allowed_tags"
+KEY_BOT_ALLOWED_FILE_TYPES = "bot.allowed_file_types"
+KEY_BOT_SHOW_SUBMITTER = "bot.show_submitter"
+KEY_BOT_NOTIFY_OWNER = "bot.notify_owner"
+
+# 重复检测/限流（热更新）
+KEY_DUPLICATE_CHECK_ENABLED = "duplicate_check.enabled"
 KEY_DUPLICATE_CHECK_WINDOW_DAYS = "duplicate_check.window_days"
+KEY_DUPLICATE_SIMILARITY_THRESHOLD = "duplicate_check.similarity_threshold"
+KEY_DUPLICATE_CHECK_URLS = "duplicate_check.check_urls"
+KEY_DUPLICATE_CHECK_CONTACTS = "duplicate_check.check_contacts"
+KEY_DUPLICATE_CHECK_TG_LINKS = "duplicate_check.check_tg_links"
+KEY_DUPLICATE_CHECK_USER_BIO = "duplicate_check.check_user_bio"
+KEY_DUPLICATE_CHECK_CONTENT_HASH = "duplicate_check.check_content_hash"
+KEY_DUPLICATE_AUTO_REJECT = "duplicate_check.auto_reject_duplicate"
+KEY_DUPLICATE_NOTIFY_USER = "duplicate_check.notify_user_duplicate"
+
+KEY_RATE_LIMIT_ENABLED = "rate_limit.enabled"
+KEY_RATE_LIMIT_COUNT = "rate_limit.count"
+KEY_RATE_LIMIT_WINDOW_HOURS = "rate_limit.window_hours"
+
+# 评分（热更新）
+KEY_RATING_ENABLED = "rating.enabled"
+KEY_RATING_ALLOW_UPDATE = "rating.allow_update"
 
 
 DEFAULT_AI_REVIEW_SYSTEM_PROMPT = "你是一个专业的内容审核助手。请严格按照要求的 JSON 格式返回审核结果。"
@@ -405,6 +431,41 @@ def ai_review_settings_fingerprint() -> str:
     return "|".join(parts)
 
 
+def bot_min_text_length() -> int:
+    fallback = int(getattr(static, "MIN_TEXT_LENGTH", 10))
+    return max(1, min(4000, get_int(KEY_BOT_MIN_TEXT_LENGTH, int(fallback))))
+
+
+def bot_max_text_length() -> int:
+    fallback = int(getattr(static, "MAX_TEXT_LENGTH", 4000))
+    return max(1, min(4000, get_int(KEY_BOT_MAX_TEXT_LENGTH, int(fallback))))
+
+
+def bot_allowed_tags() -> int:
+    fallback = int(getattr(static, "ALLOWED_TAGS", 30))
+    return max(0, min(50, get_int(KEY_BOT_ALLOWED_TAGS, int(fallback))))
+
+
+def bot_allowed_file_types() -> str:
+    fallback = str(getattr(static, "ALLOWED_FILE_TYPES", "*"))
+    return get_str(KEY_BOT_ALLOWED_FILE_TYPES, fallback)
+
+
+def bot_show_submitter() -> bool:
+    fallback = bool(getattr(static, "SHOW_SUBMITTER", True))
+    return get_bool(KEY_BOT_SHOW_SUBMITTER, bool(fallback))
+
+
+def bot_notify_owner() -> bool:
+    fallback = bool(getattr(static, "NOTIFY_OWNER", True))
+    return get_bool(KEY_BOT_NOTIFY_OWNER, bool(fallback))
+
+
+def duplicate_check_enabled() -> bool:
+    fallback = bool(getattr(static, "DUPLICATE_CHECK_ENABLED", False))
+    return get_bool(KEY_DUPLICATE_CHECK_ENABLED, bool(fallback))
+
+
 def duplicate_check_window_days() -> int:
     """
     重复投稿检测时间窗口（天）。
@@ -413,6 +474,78 @@ def duplicate_check_window_days() -> int:
     """
     fallback = int(getattr(static, "DUPLICATE_CHECK_WINDOW_DAYS", 7))
     return max(1, get_int(KEY_DUPLICATE_CHECK_WINDOW_DAYS, int(fallback)))
+
+
+def duplicate_similarity_threshold() -> float:
+    fallback = float(getattr(static, "DUPLICATE_SIMILARITY_THRESHOLD", 0.8))
+    raw = get_raw(KEY_DUPLICATE_SIMILARITY_THRESHOLD)
+    if raw is None:
+        return float(fallback)
+    try:
+        v = float(str(raw).strip())
+    except Exception:
+        return float(fallback)
+    return max(0.0, min(1.0, v))
+
+
+def duplicate_check_urls() -> bool:
+    fallback = bool(getattr(static, "DUPLICATE_CHECK_URLS", True))
+    return get_bool(KEY_DUPLICATE_CHECK_URLS, bool(fallback))
+
+
+def duplicate_check_contacts() -> bool:
+    fallback = bool(getattr(static, "DUPLICATE_CHECK_CONTACTS", True))
+    return get_bool(KEY_DUPLICATE_CHECK_CONTACTS, bool(fallback))
+
+
+def duplicate_check_tg_links() -> bool:
+    fallback = bool(getattr(static, "DUPLICATE_CHECK_TG_LINKS", True))
+    return get_bool(KEY_DUPLICATE_CHECK_TG_LINKS, bool(fallback))
+
+
+def duplicate_check_user_bio() -> bool:
+    fallback = bool(getattr(static, "DUPLICATE_CHECK_USER_BIO", True))
+    return get_bool(KEY_DUPLICATE_CHECK_USER_BIO, bool(fallback))
+
+
+def duplicate_check_content_hash() -> bool:
+    fallback = bool(getattr(static, "DUPLICATE_CHECK_CONTENT_HASH", True))
+    return get_bool(KEY_DUPLICATE_CHECK_CONTENT_HASH, bool(fallback))
+
+
+def duplicate_auto_reject_duplicate() -> bool:
+    fallback = bool(getattr(static, "DUPLICATE_AUTO_REJECT", True))
+    return get_bool(KEY_DUPLICATE_AUTO_REJECT, bool(fallback))
+
+
+def duplicate_notify_user_duplicate() -> bool:
+    fallback = bool(getattr(static, "DUPLICATE_NOTIFY_USER", True))
+    return get_bool(KEY_DUPLICATE_NOTIFY_USER, bool(fallback))
+
+
+def rate_limit_enabled() -> bool:
+    fallback = bool(getattr(static, "RATE_LIMIT_ENABLED", True))
+    return get_bool(KEY_RATE_LIMIT_ENABLED, bool(fallback))
+
+
+def rate_limit_count() -> int:
+    fallback = int(getattr(static, "RATE_LIMIT_COUNT", 3))
+    return max(1, min(20, get_int(KEY_RATE_LIMIT_COUNT, int(fallback))))
+
+
+def rate_limit_window_hours() -> int:
+    fallback = int(getattr(static, "RATE_LIMIT_WINDOW_HOURS", 24))
+    return max(1, min(168, get_int(KEY_RATE_LIMIT_WINDOW_HOURS, int(fallback))))
+
+
+def rating_enabled() -> bool:
+    fallback = bool(getattr(static, "RATING_ENABLED", True))
+    return get_bool(KEY_RATING_ENABLED, bool(fallback))
+
+
+def rating_allow_update() -> bool:
+    fallback = bool(getattr(static, "RATING_ALLOW_UPDATE", True))
+    return get_bool(KEY_RATING_ALLOW_UPDATE, bool(fallback))
 
 
 async def refresh() -> None:
@@ -456,6 +589,20 @@ async def set_many(*, values: Dict[str, str]) -> None:
     await refresh()
 
 
+async def unset_many(*, keys: List[str]) -> None:
+    """
+    删除多项运行时配置（回退到静态配置），并刷新快照。
+    """
+    if not keys:
+        return
+    async with get_db() as conn:
+        cursor = await conn.cursor()
+        for k in keys:
+            await cursor.execute("DELETE FROM runtime_settings WHERE key = ?", (str(k),))
+        await conn.commit()
+    await refresh()
+
+
 def validate_paid_ad_packages_raw(raw: str) -> None:
     _parse_paid_ad_packages_strict(raw)
 
@@ -473,3 +620,57 @@ def validate_duplicate_check_window_days(days: int) -> None:
         raise ValueError("DUPLICATE_CHECK_WINDOW_DAYS 必须大于 0")
     if value > 3650:
         raise ValueError("DUPLICATE_CHECK_WINDOW_DAYS 过大（建议不超过 3650）")
+
+
+def validate_bot_text_length(*, min_len: int, max_len: int) -> None:
+    try:
+        min_value = int(min_len)
+        max_value = int(max_len)
+    except Exception:
+        raise ValueError("字数限制必须是整数")
+    if min_value <= 0 or min_value > 4000:
+        raise ValueError("MIN_TEXT_LENGTH 范围应为 1~4000")
+    if max_value <= 0 or max_value > 4000:
+        raise ValueError("MAX_TEXT_LENGTH 范围应为 1~4000")
+    if max_value < min_value:
+        raise ValueError("MAX_TEXT_LENGTH 不能小于 MIN_TEXT_LENGTH")
+
+
+def validate_bot_allowed_tags(allowed_tags: int) -> None:
+    try:
+        value = int(allowed_tags)
+    except Exception:
+        raise ValueError("ALLOWED_TAGS 必须是整数")
+    if value < 0 or value > 50:
+        raise ValueError("ALLOWED_TAGS 范围应为 0~50")
+
+
+def validate_bot_allowed_file_types(raw: str) -> None:
+    s = (raw or "").strip()
+    if not s:
+        return
+    if len(s) > 512:
+        raise ValueError("ALLOWED_FILE_TYPES 过长（建议不超过 512 字符）")
+    from utils.file_validator import FileTypeValidator
+    FileTypeValidator(s)
+
+
+def validate_duplicate_similarity_threshold(value: float) -> None:
+    try:
+        v = float(value)
+    except Exception:
+        raise ValueError("SIMILARITY_THRESHOLD 必须是数字")
+    if v < 0.0 or v > 1.0:
+        raise ValueError("SIMILARITY_THRESHOLD 范围应为 0~1")
+
+
+def validate_rate_limit(*, count: int, window_hours: int) -> None:
+    try:
+        c = int(count)
+        w = int(window_hours)
+    except Exception:
+        raise ValueError("频率限制参数必须是整数")
+    if c <= 0 or c > 20:
+        raise ValueError("RATE_LIMIT_COUNT 范围应为 1~20")
+    if w <= 0 or w > 168:
+        raise ValueError("RATE_LIMIT_WINDOW_HOURS 范围应为 1~168")
