@@ -90,34 +90,24 @@ stop_containers() {
     fi
 }
 
-# 构建和启动
-build_and_start() {
-    local rebuild=$1
-    
-    # 设置构建参数
-    local build_args=""
+# 拉取镜像并启动
+pull_and_start() {
+    local force_recreate=$1
+
     if [ "$USE_PROXY" = true ]; then
-        # 将 localhost/127.0.0.1 转换为 Docker 可访问的地址
-        local docker_proxy_url="$PROXY_URL"
-        if [[ "$PROXY_URL" =~ (localhost|127\.0\.0\.1) ]]; then
-            log_warning "检测到 localhost/127.0.0.1，自动转换为 host.docker.internal"
-            docker_proxy_url=$(echo "$PROXY_URL" | sed -E 's/(localhost|127\.0\.0\.1)/host.docker.internal/g')
-        fi
-        log_info "使用代理: $docker_proxy_url"
-        build_args="--build-arg HTTP_PROXY=$docker_proxy_url --build-arg HTTPS_PROXY=$docker_proxy_url"
+        log_warning "--proxy 参数不影响 docker pull（需配置 Docker daemon 代理），将继续执行。"
     fi
-    
-    if [ "$rebuild" = "--rebuild" ]; then
-        log_info "重新构建 Docker 镜像（无缓存）..."
-        docker-compose build --no-cache $build_args
-    else
-        log_info "构建 Docker 镜像..."
-        docker-compose build $build_args
-    fi
-    
+
+    log_info "拉取最新镜像..."
+    docker-compose pull
+
     log_info "启动容器..."
-    docker-compose up -d
-    
+    if [ "$force_recreate" = "--recreate" ]; then
+        docker-compose up -d --force-recreate
+    else
+        docker-compose up -d
+    fi
+
     log_success "容器启动成功！"
 }
 
@@ -134,8 +124,8 @@ show_help() {
     echo "使用方法: $0 [选项]"
     echo ""
     echo "选项："
-    echo "  --fast                 快速启动（跳过构建，直接使用现有镜像）⚡️"
-    echo "  --rebuild              重新构建镜像（无缓存）"
+    echo "  --fast                 快速启动（跳过拉取，直接使用本地镜像）⚡️"
+    echo "  --rebuild              强制重建容器（会先拉取最新镜像）"
     echo "  --proxy <URL>          使用代理服务器"
     echo "  -h, --help             显示帮助信息"
     echo ""
@@ -146,16 +136,16 @@ show_help() {
     echo "示例："
     echo "  $0                                    # 正常部署"
     echo "  $0 --fast                             # 快速启动（推荐）⚡️"
-    echo "  $0 --rebuild                          # 重建镜像"
+    echo "  $0 --rebuild                          # 拉取最新镜像并强制重建容器"
     echo "  $0 --proxy http://127.0.0.1:7890      # 使用本地代理"
     echo "  $0 --proxy http://192.168.1.100:7890  # 使用网络代理"
-    echo "  $0 --rebuild --proxy http://127.0.0.1:7890  # 重建+代理"
+    echo "  $0 --rebuild --proxy http://127.0.0.1:7890  # 强制重建+代理"
     echo ""
 }
 
 # 解析命令行参数
 parse_args() {
-    rebuild_flag=""
+    recreate_flag=""
     fast_mode=false
     
     while [[ $# -gt 0 ]]; do
@@ -165,7 +155,7 @@ parse_args() {
                 shift
                 ;;
             --rebuild)
-                rebuild_flag="--rebuild"
+                recreate_flag="--recreate"
                 shift
                 ;;
             --proxy)
@@ -209,8 +199,8 @@ main() {
     
     # 快速模式：直接启动，跳过构建
     if [ "$fast_mode" = true ]; then
-        log_info "⚡️ 快速启动模式：跳过构建，直接使用现有镜像..."
-        docker-compose up -d --no-build
+        log_info "⚡️ 快速启动模式：跳过拉取，直接使用本地镜像..."
+        docker-compose up -d
         if [ $? -eq 0 ]; then
             log_success "容器启动成功"
         else
@@ -218,8 +208,8 @@ main() {
             exit 1
         fi
     else
-        # 构建和启动
-        build_and_start "$rebuild_flag"
+        # 拉取并启动
+        pull_and_start "$recreate_flag"
     fi
     
     echo ""
@@ -242,4 +232,3 @@ main() {
 
 # 运行主函数
 main "$@"
-

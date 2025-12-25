@@ -2,13 +2,10 @@ version: '3.8'
 
 services:
   telesubmit:
-    build: 
-      context: .
-      network: host  # 使用宿主机网络进行构建
-      # 代理参数（可选，通过 deploy.sh 的 --proxy 参数传入）
-      # args:
-      #   - HTTP_PROXY=${HTTP_PROXY}
-      #   - HTTPS_PROXY=${HTTPS_PROXY}
+    # 使用 GitHub Actions 构建并发布到 GHCR 的镜像
+    # 可通过环境变量覆盖，例如：
+    #   TELESUBMIT_IMAGE=ghcr.io/lookoupai/telesubmit-v2:sha-ffa158c docker-compose up -d
+    image: ${TELESUBMIT_IMAGE:-ghcr.io/lookoupai/telesubmit-v2:latest}
     container_name: telesubmit-v2
     restart: unless-stopped
     
@@ -23,12 +20,7 @@ services:
       - ./config.ini:/app/config.ini:ro      # 只读挂载配置文件
       - ./data:/app/data                      # 持久化数据库和搜索索引
       - ./logs:/app/logs                      # 持久化日志文件
-      # 开发模式：挂载代码目录以便实时更新（生产环境建议删除以下挂载）
-      - ./handlers:/app/handlers
-      - ./utils:/app/utils
-      - ./config:/app/config
-      - ./ui:/app/ui
-      - ./main.py:/app/main.py
+      # 开发模式：如需本地代码覆盖镜像，可自行添加源码挂载（生产环境不建议）
     
     # 环境变量（可选，会覆盖config.ini中的配置）
     environment:
@@ -74,4 +66,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 15s
-

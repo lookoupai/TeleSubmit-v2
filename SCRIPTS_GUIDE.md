@@ -88,13 +88,13 @@ Webhook URL (可留空稍后配置): https://your-domain.com
 # 首次部署
 ./deploy.sh
 
-# 强制重新构建镜像
+# 拉取最新镜像并强制重建容器
 ./deploy.sh --rebuild
 ```
 
 **功能特点：**
 - 检查 Docker 和 Docker Compose
-- 自动构建镜像
+- 自动拉取镜像（默认 `ghcr.io/lookoupai/telesubmit-v2:latest`）
 - 自动重启策略
 - 数据持久化（挂载 data、logs、backups）
 - 网络隔离
@@ -105,6 +105,7 @@ docker-compose ps                # 查看容器状态
 docker-compose logs -f           # 查看容器日志
 docker-compose down              # 停止容器
 docker-compose restart           # 重启容器
+docker-compose pull              # 拉取最新镜像
 ```
 
 ## 日常管理
@@ -458,4 +459,3 @@ pwd                    # 确认当前目录
 **获取帮助：**
 - 问题反馈：[GitHub Issues](https://github.com/zoidberg-xgd/TeleSubmit-v2/issues)
 - 功能建议：[GitHub Discussions](https://github.com/zoidberg-xgd/TeleSubmit-v2/discussions)
-

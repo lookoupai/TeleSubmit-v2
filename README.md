@@ -33,7 +33,7 @@
 ### 一键部署（推荐新手）
 
 ```bash
-git clone https://github.com/zoidberg-xgd/TeleSubmit-v2.git
+git clone https://github.com/lookoupai/TeleSubmit-v2.git
 cd TeleSubmit-v2
 ./quickstart.sh  # 智能检测环境，自动引导部署
 ```
@@ -42,8 +42,6 @@ cd TeleSubmit-v2
 
 <details>
 <summary><b>完整安装向导</b></summary>
-
-```bash
 
 ```bash
 cp config.ini.example config.ini
@@ -158,6 +156,11 @@ RATE_LIMIT_COUNT = 3                # 24小时内最大投稿次数
 | `./deploy.sh` | Docker 部署 | 生产环境 |
 
 更多脚本请查看 [脚本使用指南](SCRIPTS_GUIDE.md)
+
+**Docker 镜像说明**：
+- 默认使用 `ghcr.io/lookoupai/telesubmit-v2:latest`（`./deploy.sh` 会自动 `docker-compose pull`）
+- 若镜像为私有包，部署机需先执行 `docker login ghcr.io`
+- 生产环境建议固定标签（例如 `sha-xxxxxxx`）：`TELESUBMIT_IMAGE="ghcr.io/lookoupai/telesubmit-v2:sha-ffa158c" docker-compose up -d`
 
 ### 用户命令
 
@@ -443,8 +446,8 @@ TeleSubmit-v2/
 
 ## 帮助与支持
 
-- **问题反馈**: [GitHub Issues](https://github.com/zoidberg-xgd/TeleSubmit-v2/issues)
-- **功能建议**: [GitHub Discussions](https://github.com/zoidberg-xgd/TeleSubmit-v2/discussions)
+- **问题反馈**: [GitHub Issues](https://github.com/lookoupai/TeleSubmit-v2/issues)
+- **功能建议**: [GitHub Discussions](https://github.com/lookoupai/TeleSubmit-v2/discussions)
 - **开发者**: [@zoidberg-xgd](https://github.com/zoidberg-xgd)
 
 ---

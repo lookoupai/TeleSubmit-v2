@@ -10,8 +10,8 @@ help:
 	@echo ""
 	@echo "📦 Docker 部署:"
 	@echo "  deploy      - 一键部署（首次使用）"
-	@echo "  build       - 构建 Docker 镜像"
-	@echo "  rebuild     - 强制重新构建镜像"
+	@echo "  build       - 拉取最新 Docker 镜像"
+	@echo "  rebuild     - 拉取最新镜像并强制重建容器"
 	@echo "  up          - 启动容器（后台运行）"
 	@echo "  down        - 停止并删除容器"
 	@echo "  restart     - 重启容器"
@@ -43,13 +43,14 @@ deploy:
 
 # 构建镜像
 build:
-	@echo "🔨 构建 Docker 镜像..."
-	docker-compose build
+	@echo "⬇️  拉取最新 Docker 镜像..."
+	docker-compose pull
 
-# 强制重新构建
+# 拉取最新并强制重建
 rebuild:
-	@echo "🔨 强制重新构建 Docker 镜像..."
-	docker-compose build --no-cache
+	@echo "⬇️  拉取最新镜像并强制重建容器..."
+	docker-compose pull
+	docker-compose up -d --force-recreate
 
 # 启动容器
 up:
@@ -145,12 +146,11 @@ update:
 	@make backup
 	@echo "⬇️  拉取最新代码..."
 	git pull
-	@echo "🔨 重新构建镜像..."
-	docker-compose build --no-cache
-	@echo "🚀 重启容器..."
+	@echo "⬇️  拉取最新镜像..."
+	docker-compose pull
+	@echo "🚀 重启容器（如需强制重建可运行: make rebuild）..."
 	docker-compose up -d
 	@echo "✅ 更新完成"
 	@echo ""
 	@echo "📋 查看日志确认运行正常:"
 	@echo "   make logs"
-

@@ -134,7 +134,7 @@ server {
 version: '3.8'
 services:
   telesubmit:
-    build: .
+    image: ${TELESUBMIT_IMAGE:-ghcr.io/lookoupai/telesubmit-v2:latest}
     ports:
       - "8080:8080"
     environment:
@@ -147,6 +147,7 @@ services:
 
 2. **启动容器**：
 ```bash
+docker-compose pull
 docker-compose up -d
 ```
 
@@ -227,7 +228,7 @@ export WEBHOOK_URL=https://your-domain.com
 ```bash
 # 修改 docker-compose.yml 或 .env
 # 重新启动容器
-docker-compose down && docker-compose up -d
+docker-compose down && docker-compose pull && docker-compose up -d
 ```
 
 **方式 4：PaaS 平台**
@@ -530,4 +531,3 @@ Bot Application
 
 **最后更新**: 2025-10-28  
 **适用版本**: TeleSubmit v2.1+
-

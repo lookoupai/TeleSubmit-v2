@@ -95,7 +95,7 @@ jieba >= 0.42.1      # 中文分词
    ```bash
    pip install -r requirements.txt
    # 或使用 Docker
-   docker-compose up -d --build
+   docker-compose pull && docker-compose up -d
    ```
 
 3. **更新配置** (添加新选项):
@@ -196,4 +196,3 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 Made with ❤️ by the TeleSubmit Team
 
 </div>
-

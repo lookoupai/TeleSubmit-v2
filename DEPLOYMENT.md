@@ -44,7 +44,7 @@
 最简单的部署方式，适合初次使用：
 
 ```bash
-git clone https://github.com/zoidberg-xgd/TeleSubmit-v2.git
+git clone https://github.com/lookoupai/TeleSubmit-v2.git
 cd TeleSubmit-v2
 ./quickstart.sh
 ```
@@ -60,7 +60,7 @@ cd TeleSubmit-v2
 包含交互式配置向导：
 
 ```bash
-git clone https://github.com/zoidberg-xgd/TeleSubmit-v2.git
+git clone https://github.com/lookoupai/TeleSubmit-v2.git
 cd TeleSubmit-v2
 ./install.sh
 ```
@@ -78,7 +78,7 @@ cd TeleSubmit-v2
 适合生产环境和需要容器隔离的场景：
 
 ```bash
-git clone https://github.com/zoidberg-xgd/TeleSubmit-v2.git
+git clone https://github.com/lookoupai/TeleSubmit-v2.git
 cd TeleSubmit-v2
 cp config.ini.example config.ini
 nano config.ini  # 编辑配置文件
@@ -87,7 +87,7 @@ nano config.ini  # 编辑配置文件
 
 **快速启动选项**：
 
-如果您已经有构建好的镜像，想要快速重启服务（跳过漫长的构建过程）：
+如果您已经拉取过镜像，想要快速重启服务（跳过拉取过程）：
 
 ```bash
 # 快速启动模式（推荐日常使用）
@@ -95,40 +95,26 @@ nano config.ini  # 编辑配置文件
 ```
 
 这个选项会：
-- 跳过 Docker 镜像构建
-- 直接使用现有镜像启动
+- 跳过镜像拉取
+- 直接使用本地已有镜像启动
 - 几秒钟内完成部署
-- 需要先有已构建的镜像
+- 需要本地已有镜像缓存
 
 **在网络受限环境中使用代理**：
 
-如果您在中国大陆或其他网络受限地区，Docker 构建可能会卡住（拉取镜像、安装依赖等）。您可以使用代理服务器：
+如果您在中国大陆或其他网络受限地区，拉取镜像可能会失败。建议优先配置 Docker daemon 代理/镜像加速（脚本的 `--proxy` 无法直接影响 `docker pull`）。
 
 ```bash
-# 使用本地代理部署（推荐）
-./deploy.sh --proxy http://127.0.0.1:7890
-
-# 使用网络代理
-./deploy.sh --proxy http://192.168.1.100:7890
-
-# 使用代理并重新构建镜像
-./deploy.sh --rebuild --proxy http://127.0.0.1:7890
+# 强制重建容器（会先拉取最新镜像）
+./deploy.sh --rebuild
 
 # 查看所有选项
 ./deploy.sh --help
 ```
 
 **重要说明**：
-- 脚本会自动将 `localhost`/`127.0.0.1` 转换为 `host.docker.internal`，使容器能访问宿主机代理
-- 确保代理软件允许来自局域网的连接（不只是 localhost）
-- 如遇连接问题，请查看 [故障排查指南](DEPLOY_TROUBLESHOOTING.md#网络问题)
-
-**常见代理软件端口**：
-- Clash: `http://127.0.0.1:7890`
-- V2Ray: `http://127.0.0.1:10809`
-- Shadowsocks: `socks5://127.0.0.1:1080` (需转换为 http)
-
-> **提示**：确保代理软件已启动并开启"允许局域网连接"选项
+- 私有仓库镜像需先在部署机执行 `docker login ghcr.io` 再 `docker-compose pull`
+- 如需固定到某个版本/提交的镜像，可使用环境变量覆盖（见下方示例）
 
 **Docker 优势**：
 - 环境隔离，不影响主机
@@ -141,7 +127,15 @@ docker-compose ps              # 查看状态
 docker-compose logs -f         # 查看日志
 docker-compose restart         # 重启容器
 docker-compose down            # 停止并删除容器
-./deploy.sh --rebuild          # 重新构建镜像
+docker-compose pull            # 拉取最新镜像
+./deploy.sh --rebuild          # 拉取最新镜像并强制重建容器
+```
+
+**使用指定镜像标签（推荐生产环境固定版本）**：
+
+```bash
+# 固定到某次构建（示例：sha 标签）
+TELESUBMIT_IMAGE="ghcr.io/lookoupai/telesubmit-v2:sha-ffa158c" docker-compose up -d
 ```
 
 ### 方式四：手动部署（高级用户）
@@ -150,7 +144,7 @@ docker-compose down            # 停止并删除容器
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/zoidberg-xgd/TeleSubmit-v2.git
+git clone https://github.com/lookoupai/TeleSubmit-v2.git
 cd TeleSubmit-v2
 
 # 2. 创建虚拟环境（可选但推荐）
@@ -724,4 +718,3 @@ crontab -e
 2. 查看日志文件：`logs/bot.log` 和 `logs/error.log`
 3. 检查配置：`python3 check_config.py`
 4. 提交 Issue 到 GitHub 仓库
-
