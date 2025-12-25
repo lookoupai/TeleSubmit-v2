@@ -58,6 +58,10 @@ logs/
 *~
 .DS_Store
 
+# 工具生成（不推送到 GitHub）
+.ace-tool/
+.spec-workflow/
+
 # 临时文件
 *.tmp
 temp/
