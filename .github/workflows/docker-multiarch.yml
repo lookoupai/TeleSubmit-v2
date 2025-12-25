@@ -35,6 +35,10 @@ jobs:
         id: vars
         shell: bash
         run: |
+          repo="${{ github.repository }}"
+          repo_lc="${repo,,}"
+          echo "image=ghcr.io/${repo_lc}" >> "$GITHUB_OUTPUT"
+
           if [ "${{ github.event_name }}" = "push" ]; then
             echo "push=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -63,7 +67,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ${{ steps.vars.outputs.image }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=branch
