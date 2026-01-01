@@ -131,6 +131,7 @@ from handlers.index_handlers import (
 from utils.search_engine import init_search_engine
 from utils.index_manager import auto_rebuild_index_if_needed
 from utils.scheduled_publish_service import scheduled_publish_tick
+from utils.fallback_publish_service import fallback_publish_tick
 from utils.slot_ad_service import send_due_reminders
 
 # 设置日志
@@ -719,6 +720,9 @@ def setup_application(application):
 
         # 定时发布：每 30 秒 tick 一次（配置在 DB，可热更新）
         job_queue.run_repeating(scheduled_publish_tick, interval=30, first=15)
+
+        # 兜底定时发布：每 30 秒 tick 一次（当天无投稿才发，可热更新）
+        job_queue.run_repeating(fallback_publish_tick, interval=30, first=20)
 
         # Slot Ads 到期提醒：每 60 秒检查一次（默认关闭，用户 opt-in）
         job_queue.run_repeating(send_due_reminders, interval=60, first=30)

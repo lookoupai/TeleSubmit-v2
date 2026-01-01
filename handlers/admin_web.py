@@ -31,6 +31,19 @@ from utils.slot_ad_service import (
     set_slot_sell_enabled,
     terminate_active_order,
 )
+from utils.fallback_publish_service import (
+    add_pool_item as fallback_add_pool_item,
+    compute_next_run_at as compute_fallback_next_run_at,
+    count_pool_items as fallback_count_pool_items,
+    delete_pool_item as fallback_delete_pool_item,
+    get_config as get_fallback_config,
+    get_pool_item as fallback_get_pool_item,
+    list_pool_items as fallback_list_pool_items,
+    list_recent_runs as fallback_list_recent_runs,
+    set_pool_enabled as fallback_set_pool_enabled,
+    update_config_fields as update_fallback_config_fields,
+    update_pool_item as fallback_update_pool_item,
+)
 from utils import runtime_settings
 
 logger = logging.getLogger(__name__)
@@ -134,6 +147,7 @@ def _html_page(*, title: str, body: str) -> web.Response:
 	      <a href="{ADMIN_WEB_PATH}">首页</a>
 	      <a href="{ADMIN_WEB_PATH}/submit">投稿设置</a>
 	      <a href="{ADMIN_WEB_PATH}/schedule">定时发布</a>
+	      <a href="{ADMIN_WEB_PATH}/fallback">兜底定时</a>
 	      <a href="{ADMIN_WEB_PATH}/slots">广告位</a>
 	      <a href="{ADMIN_WEB_PATH}/ads">广告参数</a>
 	      <a href="{ADMIN_WEB_PATH}/ai">AI审核</a>
@@ -192,6 +206,7 @@ async def index(request: web.Request) -> web.Response:
 	  <div class="row">
 	    <a href="{base}/submit"><button>投稿设置</button></a>
 	    <a href="{base}/schedule"><button>管理定时发布</button></a>
+	    <a href="{base}/fallback"><button>管理兜底定时</button></a>
 	    <a href="{base}/slots"><button>管理广告位</button></a>
 	    <a href="{base}/ads"><button>管理广告参数</button></a>
 	    <a href="{base}/ai"><button>管理 AI 审核</button></a>
@@ -979,6 +994,377 @@ async def schedule_post(request: web.Request) -> web.Response:
     raise web.HTTPFound(location=f"{ADMIN_WEB_PATH}/schedule")
 
 
+def _preview_text(value: str, max_len: int = 80) -> str:
+    s = (value or "").strip().replace("\r\n", "\n").replace("\r", "\n")
+    s = " ".join([p for p in s.split("\n") if p.strip()])
+    if len(s) <= max_len:
+        return s
+    return s[: max(0, max_len - 1)] + "…"
+
+
+async def fallback_get(request: web.Request) -> web.Response:
+    _require_auth(request)
+    cfg = await get_fallback_config()
+    payload = cfg.schedule_payload or {}
+    time_value = str(payload.get("time") or "23:00")
+
+    pool_enabled = await fallback_count_pool_items(enabled_only=True)
+    pool_remaining = await fallback_count_pool_items(enabled_only=True, unused_cycle_id=int(cfg.cycle_id))
+    runs = await fallback_list_recent_runs(limit=20)
+
+    rows_html = []
+    items = await fallback_list_pool_items(limit=100, offset=0)
+    for it in items:
+        pid = int(it.get("id") or 0)
+        enabled = bool(int(it.get("enabled") or 0))
+        used_cycle_id = int(it.get("used_cycle_id") or 0)
+        used_tag = "已用" if used_cycle_id == int(cfg.cycle_id) else "未用"
+        dn = html.escape(str(it.get("display_name") or ""))
+        domain = html.escape(str(it.get("platform_domain") or ""))
+        tg = html.escape(str(it.get("platform_tg_username") or ""))
+        preview = html.escape(_preview_text(str(it.get("message_text") or "")))
+        toggle_to = "0" if enabled else "1"
+        toggle_text = "禁用" if enabled else "启用"
+
+        rows_html.append(
+            "<tr>"
+            f"<td><code>{pid}</code></td>"
+            f"<td>{'✅' if enabled else '❌'} <span class='pill'>{html.escape(used_tag)}</span></td>"
+            f"<td>{dn}</td>"
+            f"<td><code>{domain or '-'}</code></td>"
+            f"<td><code>{('@' + tg) if tg else '-'}</code></td>"
+            f"<td style='max-width:520px'>{preview}</td>"
+            "<td>"
+            f"<a href=\"{ADMIN_WEB_PATH}/fallback/pool/{pid}\"><button>编辑</button></a> "
+            f"<form method=\"post\" action=\"{ADMIN_WEB_PATH}/fallback/pool/{pid}/toggle\" style=\"display:inline\">"
+            f"<input type=\"hidden\" name=\"enabled\" value=\"{html.escape(toggle_to)}\" />"
+            f"<button type=\"submit\" class=\"{'danger' if enabled else ''}\">{html.escape(toggle_text)}</button>"
+            "</form>"
+            "</td>"
+            "</tr>"
+        )
+
+    runs_html = []
+    for r in runs:
+        rk = html.escape(str(r.get("run_key") or ""))
+        st = html.escape(str(r.get("status") or ""))
+        sat = _format_epoch(r.get("scheduled_at"))
+        cnt = int(r.get("published_posts_count") or 0)
+        picked = r.get("picked_pool_id")
+        msg_id = r.get("sent_message_id")
+        runs_html.append(
+            "<tr>"
+            f"<td><code>{rk}</code></td>"
+            f"<td>{html.escape(sat)}</td>"
+            f"<td><span class='pill'>{st}</span></td>"
+            f"<td><code>{cnt}</code></td>"
+            f"<td><code>{picked if picked is not None else '-'}</code></td>"
+            f"<td><code>{msg_id if msg_id is not None else '-'}</code></td>"
+            "</tr>"
+        )
+
+    body = f"""
+<div class="card">
+  <h2 style="margin-top:0">兜底定时发布（当天无投稿才发）</h2>
+  <div class="row">
+    <span class="pill">enabled: {str(cfg.enabled)}</span>
+    <span class="pill">next_run_at: {html.escape(_format_epoch(cfg.next_run_at))}</span>
+    <span class="pill">last_run_at: {html.escape(_format_epoch(cfg.last_run_at))}</span>
+    <span class="pill">cycle_id: {html.escape(str(cfg.cycle_id))}</span>
+    <span class="pill">miss_tolerance: {html.escape(str(cfg.miss_tolerance_seconds))}s</span>
+    <span class="pill">pool_enabled: {html.escape(str(pool_enabled))}</span>
+    <span class="pill">pool_remaining: {html.escape(str(pool_remaining))}</span>
+  </div>
+  <p style="opacity:.75;margin:10px 0 0">到点触发时会先查询 <code>published_posts</code> 当天是否已有发布记录；有则跳过，无则从预存池随机取一条（本周期不重复）。</p>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0">配置</h3>
+  <form method="post" action="{ADMIN_WEB_PATH}/fallback/config">
+    <div class="grid">
+      <div>
+        <label>启用</label>
+        <select name="enabled">
+          <option value="1" {"selected" if cfg.enabled else ""}>启用</option>
+          <option value="0" {"selected" if not cfg.enabled else ""}>关闭</option>
+        </select>
+      </div>
+      <div>
+        <label>每天固定时间（HH:MM）</label>
+        <input type="text" name="daily_time" value="{html.escape(time_value)}" />
+      </div>
+      <div>
+        <label>错过触发跳过阈值（秒）</label>
+        <input type="text" name="miss_tolerance_seconds" value="{html.escape(str(cfg.miss_tolerance_seconds))}" />
+      </div>
+    </div>
+    <div style="height:12px"></div>
+    <button type="submit">保存</button>
+  </form>
+  <p style="opacity:.75;margin-bottom:0">提示：本功能发布后的按钮与投稿消息一致（评分键盘，如启用）。</p>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0">新增预存消息</h3>
+  <form method="post" action="{ADMIN_WEB_PATH}/fallback/pool/add">
+    <div class="grid">
+      <div>
+        <label>平台名称（可选，仅用于后台展示）</label>
+        <input type="text" name="display_name" placeholder="例如：XX接码平台" />
+      </div>
+      <div>
+        <label>平台官网域名（优先）</label>
+        <input type="text" name="platform_domain" placeholder="例如：example.com 或 https://example.com" />
+      </div>
+      <div>
+        <label>TG 频道用户名（备用）</label>
+        <input type="text" name="platform_tg_username" placeholder="例如：@channel_username 或 https://t.me/channel_username" />
+      </div>
+      <div>
+        <label>启用</label>
+        <select name="enabled">
+          <option value="1" selected>启用</option>
+          <option value="0">禁用</option>
+        </select>
+      </div>
+    </div>
+    <div style="height:12px"></div>
+    <label>预存文案（支持 {{date}} / {{datetime}} 占位符；HTML 解析失败会自动降级为纯文本）</label>
+    <textarea name="message_text" placeholder="请输入兜底发布文案（建议包含平台域名 / TG 频道 / 联系方式等）"></textarea>
+    <div style="height:12px"></div>
+    <button type="submit">添加</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0">消息池（最多显示 100 条）</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>状态</th>
+        <th>平台</th>
+        <th>domain</th>
+        <th>tg</th>
+        <th>预览</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {"".join(rows_html) if rows_html else "<tr><td colspan='7' style='opacity:.8'>暂无预存消息</td></tr>"}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0">最近运行记录</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>run_key</th>
+        <th>scheduled_at</th>
+        <th>status</th>
+        <th>published_count</th>
+        <th>picked_pool_id</th>
+        <th>sent_message_id</th>
+      </tr>
+    </thead>
+    <tbody>
+      {"".join(runs_html) if runs_html else "<tr><td colspan='6' style='opacity:.8'>暂无记录</td></tr>"}
+    </tbody>
+  </table>
+</div>
+"""
+    return _html_page(title="兜底定时", body=body)
+
+
+async def fallback_config_post(request: web.Request) -> web.Response:
+    _require_auth(request)
+    form = await request.post()
+
+    enabled = str(form.get("enabled") or "0").strip() == "1"
+    daily_time = str(form.get("daily_time") or "23:00").strip()
+    miss_tolerance_raw = str(form.get("miss_tolerance_seconds") or "300").strip()
+    try:
+        miss_tolerance = int(miss_tolerance_raw)
+    except Exception:
+        miss_tolerance = 300
+    miss_tolerance = max(0, miss_tolerance)
+
+    payload = {"time": daily_time}
+    now = time.time()
+    try:
+        next_run_at = compute_fallback_next_run_at(now=now, schedule_type="daily_at", payload=payload)
+    except Exception as e:
+        return _html_page(title="保存失败", body=f"<div class='card'><h2 style='margin-top:0'>保存失败</h2><p>{html.escape(str(e))}</p></div>")
+
+    await update_fallback_config_fields(
+        enabled=1 if enabled else 0,
+        schedule_type="daily_at",
+        schedule_payload=json.dumps(payload, ensure_ascii=False),
+        miss_tolerance_seconds=int(miss_tolerance),
+        next_run_at=float(next_run_at) if enabled else None,
+    )
+    raise web.HTTPFound(location=f"{ADMIN_WEB_PATH}/fallback")
+
+
+async def fallback_pool_add(request: web.Request) -> web.Response:
+    _require_auth(request)
+    form = await request.post()
+
+    display_name = str(form.get("display_name") or "").strip()
+    platform_domain = str(form.get("platform_domain") or "").strip()
+    platform_tg_username = str(form.get("platform_tg_username") or "").strip()
+    enabled = str(form.get("enabled") or "1").strip() == "1"
+    message_text = str(form.get("message_text") or "")
+
+    try:
+        if not message_text.strip():
+            raise ValueError("预存文案不能为空")
+        await fallback_add_pool_item(
+            display_name=display_name,
+            platform_domain=platform_domain,
+            platform_tg_username=platform_tg_username,
+            message_text=message_text,
+            enabled=enabled,
+        )
+    except Exception as e:
+        return _html_page(title="添加失败", body=f"<div class='card'><h2 style='margin-top:0'>添加失败</h2><p>{html.escape(str(e))}</p></div>")
+
+    raise web.HTTPFound(location=f"{ADMIN_WEB_PATH}/fallback")
+
+
+async def fallback_pool_edit_get(request: web.Request) -> web.Response:
+    _require_auth(request)
+    try:
+        pool_id = int(str(request.match_info.get("pool_id") or "0"))
+    except Exception:
+        raise web.HTTPBadRequest(text="bad pool_id")
+    item = await fallback_get_pool_item(pool_id)
+    if not item:
+        raise web.HTTPNotFound(text="pool item not found")
+
+    body = f"""
+<div class="card">
+  <h2 style="margin-top:0">编辑预存消息 <code>{html.escape(str(pool_id))}</code></h2>
+  <div class="row">
+    <a href="{ADMIN_WEB_PATH}/fallback"><button>返回</button></a>
+  </div>
+</div>
+
+<div class="card">
+  <form method="post" action="{ADMIN_WEB_PATH}/fallback/pool/{pool_id}/save">
+    <div class="grid">
+      <div>
+        <label>启用</label>
+        <select name="enabled">
+          <option value="1" {"selected" if bool(int(item.get("enabled") or 0)) else ""}>启用</option>
+          <option value="0" {"selected" if not bool(int(item.get("enabled") or 0)) else ""}>禁用</option>
+        </select>
+      </div>
+      <div>
+        <label>平台名称（可选）</label>
+        <input type="text" name="display_name" value="{html.escape(str(item.get("display_name") or ""))}" />
+      </div>
+      <div>
+        <label>平台官网域名（优先）</label>
+        <input type="text" name="platform_domain" value="{html.escape(str(item.get("platform_domain") or ""))}" />
+      </div>
+      <div>
+        <label>TG 频道用户名（备用）</label>
+        <input type="text" name="platform_tg_username" value="{html.escape(str(item.get("platform_tg_username") or ""))}" />
+      </div>
+    </div>
+    <div style="height:12px"></div>
+    <label>预存文案</label>
+    <textarea name="message_text">{html.escape(str(item.get("message_text") or ""))}</textarea>
+    <div style="height:12px"></div>
+    <button type="submit">保存</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;color:rgb(220,38,38)">删除（危险操作）</h3>
+  <p style="opacity:.8;margin-top:0">
+    删除后将从消息池永久移除该条预存消息（不可恢复）。历史运行记录仍会保留 <code>picked_pool_id</code> 引用。
+    评分实体与评分数据不会自动删除（避免误删历史评分）。
+  </p>
+  <form method="post" action="{ADMIN_WEB_PATH}/fallback/pool/{pool_id}/delete">
+    <label>请输入 <code>DELETE</code> 以确认删除</label>
+    <input type="text" name="confirm" placeholder="DELETE" />
+    <div style="height:10px"></div>
+    <button type="submit" class="danger">删除该条</button>
+  </form>
+</div>
+"""
+    return _html_page(title="编辑兜底消息", body=body)
+
+
+async def fallback_pool_edit_post(request: web.Request) -> web.Response:
+    _require_auth(request)
+    try:
+        pool_id = int(str(request.match_info.get("pool_id") or "0"))
+    except Exception:
+        raise web.HTTPBadRequest(text="bad pool_id")
+    form = await request.post()
+
+    display_name = str(form.get("display_name") or "").strip()
+    platform_domain = str(form.get("platform_domain") or "").strip()
+    platform_tg_username = str(form.get("platform_tg_username") or "").strip()
+    enabled = str(form.get("enabled") or "1").strip() == "1"
+    message_text = str(form.get("message_text") or "")
+
+    try:
+        if not message_text.strip():
+            raise ValueError("预存文案不能为空")
+        await fallback_update_pool_item(
+            pool_id=int(pool_id),
+            display_name=display_name,
+            platform_domain=platform_domain,
+            platform_tg_username=platform_tg_username,
+            message_text=message_text,
+            enabled=enabled,
+        )
+    except Exception as e:
+        return _html_page(title="保存失败", body=f"<div class='card'><h2 style='margin-top:0'>保存失败</h2><p>{html.escape(str(e))}</p></div>")
+
+    raise web.HTTPFound(location=f"{ADMIN_WEB_PATH}/fallback")
+
+
+async def fallback_pool_toggle(request: web.Request) -> web.Response:
+    _require_auth(request)
+    try:
+        pool_id = int(str(request.match_info.get("pool_id") or "0"))
+    except Exception:
+        raise web.HTTPBadRequest(text="bad pool_id")
+    form = await request.post()
+    enabled = str(form.get("enabled") or "0").strip() == "1"
+    await fallback_set_pool_enabled(pool_id=int(pool_id), enabled=enabled)
+    raise web.HTTPFound(location=f"{ADMIN_WEB_PATH}/fallback")
+
+
+async def fallback_pool_delete_post(request: web.Request) -> web.Response:
+    _require_auth(request)
+    try:
+        pool_id = int(str(request.match_info.get("pool_id") or "0"))
+    except Exception:
+        raise web.HTTPBadRequest(text="bad pool_id")
+    form = await request.post()
+    confirm = str(form.get("confirm") or "").strip()
+    if confirm != "DELETE":
+        return _html_page(
+            title="删除失败",
+            body="<div class='card'><h2 style='margin-top:0'>删除失败</h2><p>请输入 DELETE 以确认删除。</p></div>",
+        )
+    ok = await fallback_delete_pool_item(pool_id=int(pool_id))
+    if not ok:
+        return _html_page(
+            title="删除失败",
+            body="<div class='card'><h2 style='margin-top:0'>删除失败</h2><p>记录不存在或已删除。</p></div>",
+        )
+    raise web.HTTPFound(location=f"{ADMIN_WEB_PATH}/fallback")
+
+
 async def slots_get(request: web.Request) -> web.Response:
     _require_auth(request)
     slot_defaults = await get_slot_defaults()
@@ -1180,6 +1566,13 @@ def build_admin_routes() -> List[Tuple[str, str, Any]]:
         ("POST", f"{base}/submit", submit_post),
         ("GET", f"{base}/schedule", schedule_get),
         ("POST", f"{base}/schedule", schedule_post),
+        ("GET", f"{base}/fallback", fallback_get),
+        ("POST", f"{base}/fallback/config", fallback_config_post),
+        ("POST", f"{base}/fallback/pool/add", fallback_pool_add),
+        ("GET", f"{base}/fallback/pool/{{pool_id}}", fallback_pool_edit_get),
+        ("POST", f"{base}/fallback/pool/{{pool_id}}/save", fallback_pool_edit_post),
+        ("POST", f"{base}/fallback/pool/{{pool_id}}/toggle", fallback_pool_toggle),
+        ("POST", f"{base}/fallback/pool/{{pool_id}}/delete", fallback_pool_delete_post),
         ("GET", f"{base}/slots", slots_get),
         ("POST", f"{base}/slots/save", slots_save),
         ("POST", f"{base}/slots/terminate", slots_terminate),

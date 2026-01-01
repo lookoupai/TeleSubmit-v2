@@ -363,6 +363,64 @@ async def init_db():
             """)
 
             # ============================================
+            # 兜底定时发布（Fallback Publish）配置 & 消息池
+            # ============================================
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS fallback_publish_config (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    schedule_type TEXT NOT NULL DEFAULT 'daily_at',
+                    schedule_payload TEXT NOT NULL DEFAULT '{}',
+                    next_run_at REAL,
+                    last_run_at REAL,
+                    cycle_id INTEGER NOT NULL DEFAULT 1,
+                    miss_tolerance_seconds INTEGER NOT NULL DEFAULT 300,
+                    updated_at REAL
+                )
+            """)
+            await conn.execute("""
+                INSERT OR IGNORE INTO fallback_publish_config(
+                    id, enabled, schedule_type, schedule_payload,
+                    cycle_id, miss_tolerance_seconds, updated_at
+                )
+                VALUES (1, 0, 'daily_at', '{}', 1, 300, strftime('%s', 'now'))
+            """)
+
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS fallback_message_pool (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    display_name TEXT,
+                    platform_domain TEXT,
+                    platform_tg_username TEXT,
+                    rating_subject_id INTEGER,
+                    message_text TEXT NOT NULL,
+                    used_cycle_id INTEGER NOT NULL DEFAULT 0,
+                    created_at REAL NOT NULL,
+                    updated_at REAL
+                )
+            """)
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_fallback_pool_enabled ON fallback_message_pool(enabled)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_fallback_pool_used_cycle_id ON fallback_message_pool(used_cycle_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_fallback_pool_rating_subject_id ON fallback_message_pool(rating_subject_id)")
+
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS fallback_publish_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_key TEXT NOT NULL UNIQUE,
+                    scheduled_at REAL NOT NULL,
+                    status TEXT NOT NULL,
+                    published_posts_count INTEGER NOT NULL DEFAULT 0,
+                    picked_pool_id INTEGER,
+                    sent_message_chat_id INTEGER,
+                    sent_message_id INTEGER,
+                    error TEXT,
+                    created_at REAL NOT NULL
+                )
+            """)
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_fallback_runs_scheduled_at ON fallback_publish_runs(scheduled_at DESC)")
+
+            # ============================================
             # 运行时配置（热更新 key-value）
             # ============================================
             await conn.execute("""
