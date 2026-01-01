@@ -1072,6 +1072,8 @@ async def fallback_get(request: web.Request) -> web.Response:
     <span class="pill">last_run_at: {html.escape(_format_epoch(cfg.last_run_at))}</span>
     <span class="pill">cycle_id: {html.escape(str(cfg.cycle_id))}</span>
     <span class="pill">miss_tolerance: {html.escape(str(cfg.miss_tolerance_seconds))}s</span>
+    <span class="pill">header_len: {html.escape(str(len(getattr(cfg, "header_text", "") or "")))}</span>
+    <span class="pill">footer_len: {html.escape(str(len(getattr(cfg, "footer_text", "") or "")))}</span>
     <span class="pill">pool_enabled: {html.escape(str(pool_enabled))}</span>
     <span class="pill">pool_remaining: {html.escape(str(pool_remaining))}</span>
   </div>
@@ -1098,6 +1100,15 @@ async def fallback_get(request: web.Request) -> web.Response:
         <input type="text" name="miss_tolerance_seconds" value="{html.escape(str(cfg.miss_tolerance_seconds))}" />
       </div>
     </div>
+    <div style="height:12px"></div>
+    <label>固定前文（可选，留空则不显示）</label>
+    <p style="margin:6px 0 0;opacity:.8">
+      占位符：<code>{{date}}</code>、<code>{{datetime}}</code>、<code>{{platform_name}}</code>、<code>{{platform_domain}}</code>、<code>{{platform_tg_username}}</code>
+    </p>
+    <textarea name="header_text" placeholder="例如：📌 今日兜底推荐（{{date}}）">{html.escape(str(getattr(cfg, "header_text", "") or ""))}</textarea>
+    <div style="height:12px"></div>
+    <label>固定后文（可选，留空则不显示）</label>
+    <textarea name="footer_text" placeholder="例如：#接码 #平台介绍  投稿请私信机器人">{html.escape(str(getattr(cfg, "footer_text", "") or ""))}</textarea>
     <div style="height:12px"></div>
     <button type="submit">保存</button>
   </form>
@@ -1185,6 +1196,8 @@ async def fallback_config_post(request: web.Request) -> web.Response:
     enabled = str(form.get("enabled") or "0").strip() == "1"
     daily_time = str(form.get("daily_time") or "23:00").strip()
     miss_tolerance_raw = str(form.get("miss_tolerance_seconds") or "300").strip()
+    header_text = str(form.get("header_text") or "")
+    footer_text = str(form.get("footer_text") or "")
     try:
         miss_tolerance = int(miss_tolerance_raw)
     except Exception:
@@ -1202,6 +1215,8 @@ async def fallback_config_post(request: web.Request) -> web.Response:
         enabled=1 if enabled else 0,
         schedule_type="daily_at",
         schedule_payload=json.dumps(payload, ensure_ascii=False),
+        header_text=header_text,
+        footer_text=footer_text,
         miss_tolerance_seconds=int(miss_tolerance),
         next_run_at=float(next_run_at) if enabled else None,
     )

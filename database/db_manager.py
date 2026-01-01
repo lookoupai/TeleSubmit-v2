@@ -371,6 +371,8 @@ async def init_db():
                     enabled INTEGER NOT NULL DEFAULT 0,
                     schedule_type TEXT NOT NULL DEFAULT 'daily_at',
                     schedule_payload TEXT NOT NULL DEFAULT '{}',
+                    header_text TEXT NOT NULL DEFAULT '',
+                    footer_text TEXT NOT NULL DEFAULT '',
                     next_run_at REAL,
                     last_run_at REAL,
                     cycle_id INTEGER NOT NULL DEFAULT 1,
@@ -378,6 +380,17 @@ async def init_db():
                     updated_at REAL
                 )
             """)
+            # 兼容迁移：为旧库补齐新字段
+            try:
+                await conn.execute("ALTER TABLE fallback_publish_config ADD COLUMN header_text TEXT NOT NULL DEFAULT ''")
+                logger.info("已添加 header_text 字段到 fallback_publish_config 表")
+            except Exception:
+                pass
+            try:
+                await conn.execute("ALTER TABLE fallback_publish_config ADD COLUMN footer_text TEXT NOT NULL DEFAULT ''")
+                logger.info("已添加 footer_text 字段到 fallback_publish_config 表")
+            except Exception:
+                pass
             await conn.execute("""
                 INSERT OR IGNORE INTO fallback_publish_config(
                     id, enabled, schedule_type, schedule_payload,

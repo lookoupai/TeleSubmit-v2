@@ -35,6 +35,8 @@ class FallbackPublishConfig:
     enabled: bool
     schedule_type: str
     schedule_payload: Dict[str, Any]
+    header_text: str
+    footer_text: str
     next_run_at: Optional[float]
     last_run_at: Optional[float]
     cycle_id: int
@@ -134,16 +136,21 @@ async def get_config() -> FallbackPublishConfig:
                 enabled=False,
                 schedule_type="daily_at",
                 schedule_payload={},
+                header_text="",
+                footer_text="",
                 next_run_at=None,
                 last_run_at=None,
                 cycle_id=1,
                 miss_tolerance_seconds=300,
             )
+        row_keys = set(getattr(row, "keys", lambda: [])())
         payload = _safe_json_loads_dict(row["schedule_payload"])
         return FallbackPublishConfig(
             enabled=bool(int(row["enabled"])),
             schedule_type=str(row["schedule_type"] or "daily_at"),
             schedule_payload=payload,
+            header_text=str(row["header_text"] or "") if "header_text" in row_keys else "",
+            footer_text=str(row["footer_text"] or "") if "footer_text" in row_keys else "",
             next_run_at=float(row["next_run_at"]) if row["next_run_at"] is not None else None,
             last_run_at=float(row["last_run_at"]) if row["last_run_at"] is not None else None,
             cycle_id=int(row["cycle_id"] or 1),
@@ -175,6 +182,49 @@ def render_message_template(message_text: str, now: Optional[float] = None) -> s
         .replace("{date}", dt.strftime("%Y-%m-%d"))
         .replace("{datetime}", dt.strftime("%Y-%m-%d %H:%M:%S"))
     )
+
+
+def render_message_template_with_vars(
+    message_text: str,
+    *,
+    now: Optional[float] = None,
+    vars: Optional[Dict[str, str]] = None,
+) -> str:
+    text = render_message_template(message_text, now=now)
+    if not vars:
+        return text
+    for k, v in vars.items():
+        if not k:
+            continue
+        text = text.replace("{" + str(k) + "}", str(v or ""))
+    return text
+
+
+def _build_platform_template_vars(pool_item: Dict[str, Any]) -> Dict[str, str]:
+    name = str(pool_item.get("display_name") or "").strip()
+    domain = str(pool_item.get("platform_domain") or "").strip()
+    tg = str(pool_item.get("platform_tg_username") or "").strip()
+    tg_norm = ""
+    if tg:
+        try:
+            tg_norm = "@" + _normalize_tg_username(tg)
+        except Exception:
+            tg_norm = tg if tg.startswith("@") else "@" + tg
+    return {
+        "platform_name": name,
+        "platform_domain": domain,
+        "platform_tg_username": tg_norm,
+    }
+
+
+def _build_fallback_message_text(cfg: FallbackPublishConfig, pool_item: Dict[str, Any], *, now: float) -> str:
+    vars = _build_platform_template_vars(pool_item)
+    header = render_message_template_with_vars(cfg.header_text or "", now=now, vars=vars).strip()
+    body = render_message_template_with_vars(str(pool_item.get("message_text") or ""), now=now, vars=vars).strip()
+    footer = render_message_template_with_vars(cfg.footer_text or "", now=now, vars=vars).strip()
+
+    parts = [p for p in (header, body, footer) if p]
+    return "\n\n".join(parts).strip()
 
 
 async def _ensure_platform_subject_id(
@@ -616,7 +666,7 @@ async def fallback_publish_tick(context) -> None:
             return
 
         pool_id = int(pool_item["id"])
-        text = render_message_template(str(pool_item.get("message_text") or ""), now=now).strip()
+        text = _build_fallback_message_text(cfg, pool_item, now=now)
         if not text:
             raise ValueError("预存消息为空")
 
