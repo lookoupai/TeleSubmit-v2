@@ -516,6 +516,23 @@ async def init_db():
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_slot_ad_orders_buyer_status ON slot_ad_orders(buyer_user_id, status)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_slot_ad_orders_remind ON slot_ad_orders(remind_at, remind_sent)")
 
+            # Slot Ads 编辑审计（用于“每单每天修改次数限制”与追溯）
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS slot_ad_order_edits (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    out_trade_no TEXT NOT NULL,
+                    day_key TEXT NOT NULL,
+                    editor_type TEXT NOT NULL,
+                    editor_user_id INTEGER,
+                    old_creative_id INTEGER,
+                    new_creative_id INTEGER NOT NULL,
+                    note TEXT,
+                    created_at REAL NOT NULL
+                )
+            """)
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_slot_ad_order_edits_order_day ON slot_ad_order_edits(out_trade_no, day_key)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_slot_ad_order_edits_created_at ON slot_ad_order_edits(created_at DESC)")
+
             await conn.commit()
             logger.info("数据库初始化完成")
     except Exception as e:

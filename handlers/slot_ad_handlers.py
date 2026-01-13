@@ -38,12 +38,16 @@ from utils.slot_ad_service import (
     ensure_can_purchase_or_renew,
     format_epoch,
     format_slot_blocked_message,
+    get_slot_order_for_edit,
     get_active_orders,
     get_plans,
     get_slot_defaults,
     is_admin,
+    refresh_last_scheduled_message_keyboard,
     set_slot_default,
     terminate_active_order,
+    update_slot_ad_order_creative_by_user,
+    user_can_edit_order_today,
     validate_button_text,
     validate_button_url,
 )
@@ -52,6 +56,84 @@ logger = logging.getLogger(__name__)
 
 
 FLOW_KEY = "slot_ad_flow"
+
+async def _start_order_edit_flow(
+    *,
+    update: Update,
+    context: CallbackContext,
+    out_trade_no: str,
+    via_query=None,
+) -> None:
+    """
+    开始“编辑订单素材”流程（私聊）。
+    """
+    out_trade_no = str(out_trade_no or "").strip()
+    user_id = update.effective_user.id if update.effective_user else None
+    if not out_trade_no or user_id is None:
+        if via_query:
+            await via_query.answer("❌ 参数无效", show_alert=True)
+        return
+    if not runtime_settings.slot_ad_enabled():
+        if via_query:
+            await via_query.answer("❌ 按钮广告位功能未开启", show_alert=True)
+        else:
+            await update.message.reply_text("❌ 按钮广告位功能未开启")
+        return
+
+    order = await get_slot_order_for_edit(out_trade_no)
+    if not order:
+        msg = "❌ 未找到订单"
+        if via_query:
+            await via_query.answer(msg, show_alert=True)
+        else:
+            await update.message.reply_text(msg)
+        return
+
+    if int(order.get("buyer_user_id") or 0) != int(user_id):
+        msg = "❌ 无权限（仅支持修改自己的订单）"
+        if via_query:
+            await via_query.answer(msg, show_alert=True)
+        else:
+            await update.message.reply_text(msg)
+        return
+
+    quota = await user_can_edit_order_today(out_trade_no=str(out_trade_no), user_id=int(user_id))
+    if not quota.get("ok"):
+        limit = quota.get("limit")
+        msg = f"⚠️ 今日已达到修改次数上限（{limit} 次/单/天）" if limit else "⚠️ 今日已达到修改次数上限"
+        if via_query:
+            await via_query.answer(msg, show_alert=True)
+        else:
+            await update.message.reply_text(msg)
+        return
+
+    remaining = quota.get("remaining")
+    remaining_text = f"{int(remaining)}" if isinstance(remaining, int) else "不限"
+    limit = quota.get("limit")
+    limit_text = "不限" if int(limit or 0) <= 0 else str(int(limit))
+
+    context.user_data[FLOW_KEY] = {
+        "stage": "edit_text",
+        "mode": "edit",
+        "out_trade_no": str(out_trade_no),
+    }
+
+    current_text = str(order.get("button_text") or "").strip()
+    current_url = str(order.get("button_url") or "").strip()
+    tip = (
+        "🛠️ 修改按钮广告内容\n\n"
+        f"订单号：{_as_html_code(out_trade_no)}\n"
+        f"当前按钮文案：{_as_html_code(current_text)}\n"
+        f"当前按钮链接：{_as_html_code(current_url)}\n\n"
+        f"今日剩余次数：{_as_html_code(remaining_text)} / {_as_html_code(limit_text)}\n\n"
+        "请发送新的按钮文案："
+    )
+
+    if via_query and getattr(via_query, "message", None):
+        await via_query.message.reply_text(tip, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+    elif update.message:
+        await update.message.reply_text(tip, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
 
 
 def _get_args_text(update: Update) -> str:
@@ -242,6 +324,20 @@ async def try_handle_start_args(update: Update, context: CallbackContext) -> boo
     return True
 
 
+async def slot_edit_cmd(update: Update, context: CallbackContext) -> None:
+    """
+    /slot_edit <out_trade_no>
+    允许用户在订单有效期内自助修改按钮文案与链接（每日限额）。
+    """
+    if not update.message:
+        return
+    out_trade_no = _get_args_text(update).strip()
+    if not out_trade_no:
+        await update.message.reply_text("用法：/slot_edit <订单号>\n\n提示：订单号形如 SLTxxxxxxxxxxxx。")
+        return
+    await _start_order_edit_flow(update=update, context=context, out_trade_no=str(out_trade_no), via_query=None)
+
+
 async def handle_slot_callback(update: Update, context: CallbackContext) -> None:
     """
     slot_* 回调入口（由 handlers/callback_handlers.py 分发）
@@ -255,6 +351,11 @@ async def handle_slot_callback(update: Update, context: CallbackContext) -> None
     if data == "slot_cancel":
         context.user_data.pop(FLOW_KEY, None)
         await query.edit_message_text("已取消")
+        return
+
+    if data.startswith("slot_edit_"):
+        out_trade_no = data.replace("slot_edit_", "", 1)
+        await _start_order_edit_flow(update=update, context=context, out_trade_no=str(out_trade_no), via_query=query)
         return
 
     if data.startswith("slot_buy_"):
@@ -405,6 +506,57 @@ async def handle_slot_text_input(update: Update, context: CallbackContext) -> No
     stage = str(flow.get("stage") or "")
     text = update.message.text.strip()
     user_id = update.effective_user.id
+
+    if stage == "edit_text":
+        try:
+            flow["button_text"] = validate_button_text(text)
+        except Exception as e:
+            await update.message.reply_text(f"❌ {e}\n\n请重新发送按钮文案：")
+            raise ApplicationHandlerStop()
+        flow["stage"] = "edit_url"
+        context.user_data[FLOW_KEY] = flow
+        await update.message.reply_text("请发送新的按钮链接（仅允许 https://）：")
+        raise ApplicationHandlerStop()
+
+    if stage == "edit_url":
+        try:
+            flow["button_url"] = validate_button_url(text)
+        except Exception as e:
+            await update.message.reply_text(f"❌ {e}\n\n请重新发送链接：")
+            raise ApplicationHandlerStop()
+
+        out_trade_no = str(flow.get("out_trade_no") or "").strip()
+        if not out_trade_no or not flow.get("button_text"):
+            await update.message.reply_text("❌ 会话状态异常，请重新从“修改广告内容”入口开始。")
+            context.user_data.pop(FLOW_KEY, None)
+            raise ApplicationHandlerStop()
+
+        try:
+            result = await update_slot_ad_order_creative_by_user(
+                out_trade_no=str(out_trade_no),
+                user_id=int(user_id),
+                button_text=str(flow["button_text"]),
+                button_url=str(flow["button_url"]),
+            )
+        except Exception as e:
+            await update.message.reply_text(f"❌ 修改失败：{e}")
+            context.user_data.pop(FLOW_KEY, None)
+            raise ApplicationHandlerStop()
+
+        context.user_data.pop(FLOW_KEY, None)
+
+        refreshed = False
+        try:
+            refreshed = await refresh_last_scheduled_message_keyboard(bot=context.bot)
+        except Exception as e:
+            logger.warning(f"修改素材后更新键盘失败（可忽略，后续定时消息会生效）: {e}", exc_info=True)
+            refreshed = False
+
+        await update.message.reply_text(
+            "✅ 已更新按钮广告内容。\n"
+            + ("✅ 已尝试刷新最近一次定时消息按钮。" if refreshed else "ℹ️ 将在下一次定时消息发送时生效。")
+        )
+        raise ApplicationHandlerStop()
 
     if stage == "text":
         try:

@@ -5,6 +5,7 @@ import asyncio
 import logging
 
 from aiohttp import web
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from config.settings import PAID_AD_ENABLED, SLOT_AD_ENABLED, UPAY_SECRET_KEY
 from utils.paid_ad_service import handle_upay_notify
@@ -65,6 +66,9 @@ async def _notify_slot_ad_paid_if_possible(request: web.Request, out_trade_no: s
         await tg_app.bot.send_message(
             chat_id=int(buyer_user_id),
             text=text,
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("修改广告内容", callback_data=f"slot_edit_{str(out_trade_no)}")]]
+            ),
             disable_web_page_preview=True,
         )
     except Exception as e:

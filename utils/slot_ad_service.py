@@ -703,6 +703,324 @@ async def get_slot_order_for_user_notice(out_trade_no: str) -> Optional[Dict[str
         row = await cursor.fetchone()
         return dict(row) if row else None
 
+def _day_key(ts: float) -> str:
+    return time.strftime("%Y%m%d", time.localtime(float(ts)))
+
+
+async def get_slot_order_for_edit(out_trade_no: str) -> Optional[Dict[str, Any]]:
+    """
+    获取可用于“编辑素材”的订单信息（含当前素材与归属信息）。
+    """
+    ot = str(out_trade_no or "").strip()
+    if not ot:
+        return None
+    async with get_db() as conn:
+        cursor = await conn.cursor()
+        await cursor.execute(
+            """
+            SELECT o.out_trade_no, o.slot_id, o.buyer_user_id, o.status, o.start_at, o.end_at, o.creative_id,
+                   c.button_text AS button_text, c.button_url AS button_url
+            FROM slot_ad_orders o
+            JOIN slot_ad_creatives c ON c.id = o.creative_id
+            WHERE o.out_trade_no = ?
+            LIMIT 1
+            """,
+            (ot,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def _count_order_edits_today(
+    *,
+    out_trade_no: str,
+    day_key: str,
+    editor_type: str,
+    editor_user_id: Optional[int],
+) -> int:
+    async with get_db() as conn:
+        cursor = await conn.cursor()
+        await cursor.execute(
+            """
+            SELECT COUNT(1) AS c
+            FROM slot_ad_order_edits
+            WHERE out_trade_no = ?
+              AND day_key = ?
+              AND editor_type = ?
+              AND (editor_user_id IS ? OR editor_user_id = ?)
+            """,
+            (str(out_trade_no), str(day_key), str(editor_type), editor_user_id, editor_user_id),
+        )
+        row = await cursor.fetchone()
+        try:
+            return int(row["c"] or 0) if row else 0
+        except Exception:
+            return 0
+
+
+async def user_can_edit_order_today(*, out_trade_no: str, user_id: int, now: Optional[float] = None) -> Dict[str, Any]:
+    """
+    用于 UI 提前提示：返回剩余次数与是否可编辑（不做素材校验/更新）。
+    """
+    t = float(now if now is not None else time.time())
+    order = await get_slot_order_for_edit(out_trade_no)
+    if not order:
+        return {"ok": False, "reason": "not_found"}
+    if int(order.get("buyer_user_id") or 0) != int(user_id):
+        return {"ok": False, "reason": "no_permission"}
+    if str(order.get("status") or "") != "active":
+        return {"ok": False, "reason": "not_active"}
+    end_at = order.get("end_at")
+    if end_at is None or float(end_at) <= t:
+        return {"ok": False, "reason": "expired"}
+
+    limit = int(runtime_settings.slot_ad_edit_limit_per_order_per_day())
+    if limit <= 0:
+        return {"ok": True, "remaining": None, "limit": 0}
+    day = _day_key(t)
+    used = await _count_order_edits_today(out_trade_no=str(out_trade_no), day_key=day, editor_type="user_bot", editor_user_id=int(user_id))
+    remaining = max(0, limit - int(used))
+    return {"ok": remaining > 0, "remaining": remaining, "limit": limit}
+
+
+async def _create_creative_in_tx(
+    *,
+    cursor,
+    user_id: int,
+    button_text: str,
+    button_url: str,
+    ai_review: Optional[Dict[str, Any]],
+    now: float,
+) -> int:
+    ai_review_json = json.dumps(ai_review, ensure_ascii=False) if ai_review else None
+    ai_passed = None
+    if ai_review and "passed" in ai_review:
+        ai_passed = 1 if bool(ai_review.get("passed")) else 0
+    await cursor.execute(
+        """
+        INSERT INTO slot_ad_creatives(user_id, button_text, button_url, ai_review_result, ai_review_passed, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (int(user_id), str(button_text), str(button_url), ai_review_json, ai_passed, float(now)),
+    )
+    return int(cursor.lastrowid)
+
+
+async def _update_order_creative_with_audit_in_tx(
+    *,
+    cursor,
+    out_trade_no: str,
+    new_creative_id: int,
+    old_creative_id: int,
+    editor_type: str,
+    editor_user_id: Optional[int],
+    note: str,
+    now: float,
+) -> None:
+    await cursor.execute(
+        "UPDATE slot_ad_orders SET creative_id = ? WHERE out_trade_no = ?",
+        (int(new_creative_id), str(out_trade_no)),
+    )
+    await cursor.execute(
+        """
+        INSERT INTO slot_ad_order_edits(out_trade_no, day_key, editor_type, editor_user_id, old_creative_id, new_creative_id, note, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(out_trade_no),
+            _day_key(float(now)),
+            str(editor_type),
+            int(editor_user_id) if editor_user_id is not None else None,
+            int(old_creative_id) if old_creative_id is not None else None,
+            int(new_creative_id),
+            (str(note or "").strip()[:200] or None),
+            float(now),
+        ),
+    )
+
+
+async def update_slot_ad_order_creative_by_user(
+    *,
+    out_trade_no: str,
+    user_id: int,
+    button_text: str,
+    button_url: str,
+    now: Optional[float] = None,
+) -> Dict[str, Any]:
+    """
+    用户在广告有效期内自助更新素材（每日限额）。
+    - 允许 start_at > now（已支付待生效）
+    - 仅允许修改自己的订单
+    """
+    t = float(now if now is not None else time.time())
+    bt = validate_button_text(button_text)
+    bu = validate_button_url(button_url)
+
+    from utils.ad_risk_reviewer import review_ad_risk
+
+    review = await review_ad_risk(button_text=bt, button_url=bu)
+    if not review.passed:
+        raise ValueError(f"风控拒绝：{review.category}，原因：{review.reason}")
+
+    limit = int(runtime_settings.slot_ad_edit_limit_per_order_per_day())
+    day = _day_key(t)
+
+    async with get_db() as conn:
+        cursor = await conn.cursor()
+        await cursor.execute("SELECT * FROM slot_ad_orders WHERE out_trade_no = ? LIMIT 1", (str(out_trade_no),))
+        order = await cursor.fetchone()
+        if not order:
+            raise ValueError("订单不存在")
+        if int(order["buyer_user_id"]) != int(user_id):
+            raise ValueError("无权限")
+        if str(order["status"] or "") != "active":
+            raise ValueError("订单状态不允许修改")
+        end_at = order["end_at"]
+        if end_at is None or float(end_at) <= t:
+            raise ValueError("订单已到期")
+
+        if limit > 0:
+            await cursor.execute(
+                """
+                SELECT COUNT(1) AS c
+                FROM slot_ad_order_edits
+                WHERE out_trade_no = ? AND day_key = ? AND editor_type = 'user_bot' AND editor_user_id = ?
+                """,
+                (str(out_trade_no), str(day), int(user_id)),
+            )
+            row = await cursor.fetchone()
+            used = int(row["c"] or 0) if row else 0
+            if used >= limit:
+                raise ValueError(f"今日已达到修改次数上限（{limit} 次/单/天）")
+
+        old_creative_id = int(order["creative_id"])
+        new_creative_id = await _create_creative_in_tx(
+            cursor=cursor,
+            user_id=int(user_id),
+            button_text=bt,
+            button_url=bu,
+            ai_review=review.to_dict(),
+            now=t,
+        )
+        await _update_order_creative_with_audit_in_tx(
+            cursor=cursor,
+            out_trade_no=str(out_trade_no),
+            new_creative_id=int(new_creative_id),
+            old_creative_id=int(old_creative_id),
+            editor_type="user_bot",
+            editor_user_id=int(user_id),
+            note="user_edit",
+            now=t,
+        )
+        await conn.commit()
+        return {
+            "out_trade_no": str(out_trade_no),
+            "slot_id": int(order["slot_id"]),
+            "buyer_user_id": int(order["buyer_user_id"]),
+            "old_creative_id": int(old_creative_id),
+            "new_creative_id": int(new_creative_id),
+        }
+
+
+async def update_slot_ad_order_creative_by_admin(
+    *,
+    out_trade_no: str,
+    button_text: str,
+    button_url: str,
+    force: bool = False,
+    note: str = "admin_web_edit",
+    now: Optional[float] = None,
+) -> Dict[str, Any]:
+    """
+    管理员在 Web 后台手动更新素材。
+    - 默认同样受每日限额约束（force=True 可忽略限额）
+    """
+    t = float(now if now is not None else time.time())
+    bt = validate_button_text(button_text)
+    bu = validate_button_url(button_url)
+
+    from utils.ad_risk_reviewer import review_ad_risk
+
+    review = await review_ad_risk(button_text=bt, button_url=bu)
+    if not review.passed:
+        raise ValueError(f"风控拒绝：{review.category}，原因：{review.reason}")
+
+    limit = int(runtime_settings.slot_ad_edit_limit_per_order_per_day())
+    day = _day_key(t)
+
+    async with get_db() as conn:
+        cursor = await conn.cursor()
+        await cursor.execute("SELECT * FROM slot_ad_orders WHERE out_trade_no = ? LIMIT 1", (str(out_trade_no),))
+        order = await cursor.fetchone()
+        if not order:
+            raise ValueError("订单不存在")
+        if str(order["status"] or "") != "active":
+            raise ValueError("订单状态不允许修改")
+        end_at = order["end_at"]
+        if end_at is None or float(end_at) <= t:
+            raise ValueError("订单已到期")
+
+        if (not force) and limit > 0:
+            await cursor.execute(
+                "SELECT COUNT(1) AS c FROM slot_ad_order_edits WHERE out_trade_no = ? AND day_key = ?",
+                (str(out_trade_no), str(day)),
+            )
+            row = await cursor.fetchone()
+            used = int(row["c"] or 0) if row else 0
+            if used >= limit:
+                raise ValueError(f"今日已达到修改次数上限（{limit} 次/单/天）。如需强制修改，请勾选“强制”。")
+
+        old_creative_id = int(order["creative_id"])
+        buyer_user_id = int(order["buyer_user_id"])
+        new_creative_id = await _create_creative_in_tx(
+            cursor=cursor,
+            user_id=buyer_user_id,
+            button_text=bt,
+            button_url=bu,
+            ai_review=review.to_dict(),
+            now=t,
+        )
+        await _update_order_creative_with_audit_in_tx(
+            cursor=cursor,
+            out_trade_no=str(out_trade_no),
+            new_creative_id=int(new_creative_id),
+            old_creative_id=int(old_creative_id),
+            editor_type="admin_web",
+            editor_user_id=None,
+            note=note,
+            now=t,
+        )
+        await conn.commit()
+        return {
+            "out_trade_no": str(out_trade_no),
+            "slot_id": int(order["slot_id"]),
+            "buyer_user_id": buyer_user_id,
+            "old_creative_id": int(old_creative_id),
+            "new_creative_id": int(new_creative_id),
+        }
+
+
+async def refresh_last_scheduled_message_keyboard(*, bot, now: Optional[float] = None) -> bool:
+    """
+    立即刷新“最近一次定时消息”的按钮键盘（仅改 reply_markup，不改正文）。
+    返回 True 表示已尝试刷新（且具备 last_message_id）；False 表示无可刷新目标。
+    """
+    from utils.scheduled_publish_service import get_config as get_sched_config
+
+    sched = await get_sched_config()
+    if not sched.last_message_chat_id or not sched.last_message_id:
+        return False
+    t = float(now if now is not None else time.time())
+    slot_defaults = await get_slot_defaults()
+    active = await get_active_orders(now=t)
+    keyboard = build_channel_keyboard(slot_defaults=slot_defaults, active_orders=active)
+    await bot.edit_message_reply_markup(
+        chat_id=int(sched.last_message_chat_id),
+        message_id=int(sched.last_message_id),
+        reply_markup=keyboard,
+    )
+    return True
+
 
 async def confirm_paid_by_trade_id(out_trade_no: str) -> bool:
     async with get_db() as conn:

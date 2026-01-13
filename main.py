@@ -97,6 +97,7 @@ from handlers.slot_ad_handlers import (
     sched_pin,
     sched_set_text,
     sched_status,
+    slot_edit_cmd,
     slot_clear_default_cmd,
     slot_set_default_cmd,
     slot_terminate_cmd,
@@ -259,6 +260,7 @@ async def setup_bot_commands(application):
         BotCommand("submit", "📝 发起投稿"),
         BotCommand("ad", "📢 发布广告（扣次数）"),
         BotCommand("ad_balance", "💳 查看广告余额"),
+        BotCommand("slot_edit", "🛠️ 修改按钮广告内容"),
         BotCommand("search", "🔍 搜索投稿内容"),
         BotCommand("tags", "🏷️ 查看标签云"),
         BotCommand("myposts", "📋 查看我的投稿"),
@@ -559,6 +561,7 @@ def setup_application(application):
     application.add_handler(CommandHandler("slot_set_default", slot_set_default_cmd))
     application.add_handler(CommandHandler("slot_clear_default", slot_clear_default_cmd))
     application.add_handler(CommandHandler("slot_terminate", slot_terminate_cmd))
+    application.add_handler(CommandHandler("slot_edit", slot_edit_cmd))
 
     application.add_handler(
         MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_slot_text_input),

@@ -44,6 +44,7 @@ KEY_SLOT_AD_RENEW_PROTECT_DAYS = "slot_ad.renew_protect_days"
 KEY_SLOT_AD_BUTTON_TEXT_MAX_LEN = "slot_ad.button_text_max_len"
 KEY_SLOT_AD_URL_MAX_LEN = "slot_ad.url_max_len"
 KEY_SLOT_AD_REMINDER_ADVANCE_DAYS = "slot_ad.reminder_advance_days"
+KEY_SLOT_AD_EDIT_LIMIT_PER_ORDER_PER_DAY = "slot_ad.edit_limit_per_order_per_day"
 
 KEY_AI_REVIEW_ENABLED = "ai_review.enabled"
 KEY_AI_REVIEW_MODEL = "ai_review.model"
@@ -327,6 +328,19 @@ def slot_ad_active_rows_count() -> int:
     fallback = int(getattr(static, "SLOT_AD_ACTIVE_ROWS_COUNT", 0)) or int(getattr(static, "SLOT_AD_MAX_ROWS", 0))
     return max(0, get_int(KEY_SLOT_AD_ACTIVE_ROWS_COUNT, int(fallback)))
 
+def slot_ad_edit_limit_per_order_per_day() -> int:
+    """
+    每个 Slot Ads 订单每天允许修改次数（0 表示不限制）。
+    """
+    raw = get_raw(KEY_SLOT_AD_EDIT_LIMIT_PER_ORDER_PER_DAY)
+    if raw is None:
+        return 1
+    try:
+        v = int(str(raw).strip())
+    except Exception:
+        return 1
+    return max(0, min(20, int(v)))
+
 
 def ai_review_enabled() -> bool:
     return get_bool(KEY_AI_REVIEW_ENABLED, static.AI_REVIEW_ENABLED)
@@ -609,6 +623,16 @@ def validate_paid_ad_packages_raw(raw: str) -> None:
 
 def validate_slot_ad_plans_raw(raw: str) -> None:
     _parse_slot_ad_plans_strict(raw)
+
+def validate_slot_ad_edit_limit_per_order_per_day(limit: int) -> None:
+    try:
+        v = int(limit)
+    except Exception:
+        raise ValueError("SLOT_AD.EDIT_LIMIT_PER_ORDER_PER_DAY 必须是整数")
+    if v < 0:
+        raise ValueError("SLOT_AD.EDIT_LIMIT_PER_ORDER_PER_DAY 不能为负数")
+    if v > 20:
+        raise ValueError("SLOT_AD.EDIT_LIMIT_PER_ORDER_PER_DAY 不能大于 20")
 
 
 def validate_duplicate_check_window_days(days: int) -> None:

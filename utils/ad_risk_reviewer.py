@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
@@ -61,6 +62,9 @@ async def review_ad_risk(*, button_text: str, button_url: str) -> AdRiskReviewRe
     返回 passed=True 表示可继续；passed=False 表示拒绝。
     """
     merged = f"{button_text}\n{button_url}".strip()
+    # 测试环境：避免任何外部网络调用，强制走本地启发式降级
+    if str(os.getenv("TESTING") or "").strip().lower() in ("1", "true", "yes"):
+        return _keyword_fallback(merged)
     if not AI_REVIEW_ENABLED or not AI_REVIEW_API_KEY:
         return _keyword_fallback(merged)
 

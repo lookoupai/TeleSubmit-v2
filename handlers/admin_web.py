@@ -27,9 +27,11 @@ from utils.slot_ad_service import (
     get_reserved_orders,
     get_slot_defaults,
     parse_default_buttons_lines,
+    refresh_last_scheduled_message_keyboard,
     set_slot_default_buttons,
     set_slot_sell_enabled,
     terminate_active_order,
+    update_slot_ad_order_creative_by_admin,
 )
 from utils.fallback_publish_service import (
     add_pool_item as fallback_add_pool_item,
@@ -299,6 +301,10 @@ async def ads_get(request: web.Request) -> web.Response:
         <label>到期提醒提前（天）（来源：{_src(runtime_settings.KEY_SLOT_AD_REMINDER_ADVANCE_DAYS)}）</label>
         <input type="text" name="slot_ad_reminder_advance_days" value="{html.escape(str(runtime_settings.slot_ad_reminder_advance_days()))}" />
       </div>
+      <div>
+        <label>每单每天允许修改次数（0=不限制）（来源：{_src(runtime_settings.KEY_SLOT_AD_EDIT_LIMIT_PER_ORDER_PER_DAY)}）</label>
+        <input type="text" name="slot_ad_edit_limit_per_order_per_day" value="{html.escape(str(runtime_settings.slot_ad_edit_limit_per_order_per_day()))}" />
+      </div>
     </div>
     <div style="height:12px"></div>
     <label>租期套餐（天数:金额，逗号分隔）（来源：{_src(runtime_settings.KEY_SLOT_AD_PLANS_RAW)}）</label>
@@ -356,6 +362,13 @@ async def ads_post(request: web.Request) -> web.Response:
         if remind_days < 0:
             raise ValueError("SLOT_AD.REMINDER_ADVANCE_DAYS 不能为负数")
 
+        raw_edit_limit = _t("slot_ad_edit_limit_per_order_per_day")
+        if raw_edit_limit:
+            slot_ad_edit_limit_per_order_per_day = int(raw_edit_limit)
+        else:
+            slot_ad_edit_limit_per_order_per_day = int(runtime_settings.slot_ad_edit_limit_per_order_per_day())
+        runtime_settings.validate_slot_ad_edit_limit_per_order_per_day(slot_ad_edit_limit_per_order_per_day)
+
         active_rows_count = int(_t("slot_ad_active_rows_count") or "0")
         if active_rows_count < 0:
             raise ValueError("SLOT_AD.ACTIVE_ROWS_COUNT 不能为负数")
@@ -391,6 +404,7 @@ async def ads_post(request: web.Request) -> web.Response:
         runtime_settings.KEY_SLOT_AD_BUTTON_TEXT_MAX_LEN: str(btn_max),
         runtime_settings.KEY_SLOT_AD_URL_MAX_LEN: str(url_max),
         runtime_settings.KEY_SLOT_AD_REMINDER_ADVANCE_DAYS: str(remind_days),
+        runtime_settings.KEY_SLOT_AD_EDIT_LIMIT_PER_ORDER_PER_DAY: str(slot_ad_edit_limit_per_order_per_day),
     })
     raise web.HTTPFound(location=f"{ADMIN_WEB_PATH}/ads")
 
@@ -1403,6 +1417,7 @@ async def slots_get(request: web.Request) -> web.Response:
 
         active_html = "-"
         terminate_form = ""
+        edit_form = ""
         if a or r or p:
             target = a or r or p
             start_at = _format_epoch(target.get("start_at"))
@@ -1458,6 +1473,32 @@ async def slots_get(request: web.Request) -> web.Response:
                     <button class="danger" type="submit">终止</button>
                   </form>
                 """
+                edit_form = f"""
+                  <div style="height:10px"></div>
+                  <form method="post" action="{ADMIN_WEB_PATH}/slots/order/edit">
+                    <input type="hidden" name="out_trade_no" value="{out_trade_no}" />
+                    <label>修改按钮广告内容（立即生效，且尝试刷新最近一次定时消息）</label>
+                    <div class="row">
+                      <div style="min-width:220px;flex:1">
+                        <label>按钮文案</label>
+                        <input type="text" name="button_text" value="{button_text}" />
+                      </div>
+                      <div style="min-width:320px;flex:2">
+                        <label>按钮链接（https://）</label>
+                        <input type="text" name="button_url" value="{button_url}" />
+                      </div>
+                    </div>
+                    <div style="height:6px"></div>
+                    <div class="row">
+                      <label style="display:flex;gap:8px;align-items:center;margin:0">
+                        <input type="checkbox" name="force" value="1" />
+                        强制（忽略“每单每天修改次数限制”）
+                      </label>
+                      <input type="text" name="note" placeholder="备注（可选）" style="width:260px" />
+                      <button type="submit">保存修改</button>
+                    </div>
+                  </form>
+                """
 
         rows_html.append(f"""
           <tr>
@@ -1479,7 +1520,7 @@ async def slots_get(request: web.Request) -> web.Response:
                 <button type="submit" name="clear" value="1">清空默认</button>
               </form>
             </td>
-            <td>{active_html}<div style="height:8px"></div>{terminate_form}</td>
+            <td>{active_html}<div style="height:8px"></div>{terminate_form}{edit_form}</td>
           </tr>
         """)
 
@@ -1533,6 +1574,40 @@ async def slots_save(request: web.Request) -> web.Response:
     await set_slot_sell_enabled(slot_id, sell_enabled)
     raise web.HTTPFound(location=f"{ADMIN_WEB_PATH}/slots")
 
+async def slots_order_edit(request: web.Request) -> web.Response:
+    _require_auth(request)
+    form = await request.post()
+    out_trade_no = str(form.get("out_trade_no") or "").strip()
+    button_text = str(form.get("button_text") or "").strip()
+    button_url = str(form.get("button_url") or "").strip()
+    force = str(form.get("force") or "").strip() == "1"
+    note = str(form.get("note") or "").strip()
+
+    if not out_trade_no:
+        raise web.HTTPBadRequest(text="missing out_trade_no")
+
+    try:
+        await update_slot_ad_order_creative_by_admin(
+            out_trade_no=out_trade_no,
+            button_text=button_text,
+            button_url=button_url,
+            force=bool(force),
+            note=(note or "admin_web_edit"),
+        )
+    except Exception as e:
+        return _html_page(
+            title="保存失败",
+            body=f"<div class='card'><h2 style='margin-top:0'>保存失败</h2><p>{html.escape(str(e))}</p></div>",
+        )
+
+    tg_app = _get_tg_app(request)
+    try:
+        await refresh_last_scheduled_message_keyboard(bot=tg_app.bot)
+    except Exception as e:
+        logger.warning(f"Web 修改素材后更新键盘失败（可忽略，后续定时消息会生效）: {e}", exc_info=True)
+
+    raise web.HTTPFound(location=f"{ADMIN_WEB_PATH}/slots")
+
 
 async def slots_terminate(request: web.Request) -> web.Response:
     _require_auth(request)
@@ -1551,16 +1626,7 @@ async def slots_terminate(request: web.Request) -> web.Response:
 
     # 立刻更新最近一次定时消息的键盘（不改正文）
     try:
-        sched = await get_sched_config()
-        if sched.last_message_chat_id and sched.last_message_id:
-            slot_defaults = await get_slot_defaults()
-            active = await get_active_orders()
-            keyboard = build_channel_keyboard(slot_defaults=slot_defaults, active_orders=active)
-            await tg_app.bot.edit_message_reply_markup(
-                chat_id=int(sched.last_message_chat_id),
-                message_id=int(sched.last_message_id),
-                reply_markup=keyboard,
-            )
+        await refresh_last_scheduled_message_keyboard(bot=tg_app.bot)
     except Exception as e:
         logger.warning(f"Web 终止后更新键盘失败（可忽略，后续定时消息会生效）: {e}", exc_info=True)
 
@@ -1590,6 +1656,7 @@ def build_admin_routes() -> List[Tuple[str, str, Any]]:
         ("POST", f"{base}/fallback/pool/{{pool_id}}/delete", fallback_pool_delete_post),
         ("GET", f"{base}/slots", slots_get),
         ("POST", f"{base}/slots/save", slots_save),
+        ("POST", f"{base}/slots/order/edit", slots_order_edit),
         ("POST", f"{base}/slots/terminate", slots_terminate),
         ("GET", f"{base}/ads", ads_get),
         ("POST", f"{base}/ads", ads_post),

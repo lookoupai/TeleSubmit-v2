@@ -42,6 +42,9 @@ class MessageFormatter:
 /submit - 开始新投稿
 /cancel - 取消当前投稿
 
+<b>🧷 按钮广告位（Slot Ads）：</b>
+/slot_edit <订单号> - 修改按钮广告内容（每单每天默认 1 次，仅私聊可用）
+
 <b>📊 统计查询：</b>
 /hot [数量] [时间] - 查看热门内容
   示例: /hot 20 week
@@ -496,4 +499,3 @@ class MessageFormatter:
         empty = width - filled
         
         return "▰" * filled + "▱" * empty
-
