@@ -41,7 +41,8 @@ async def submit(update: Update, context: CallbackContext) -> int:
     username = user.username or f"user{user.id}"
 
     # 初始化投稿会话配置快照（保证同一次投稿流程一致性）
-    ensure_snapshot(context)
+    # 注意：快照内会根据白名单策略应用“放宽项”，并只对本次会话生效（避免会话中规则漂移）
+    ensure_snapshot(context, user_id=user_id)
     
     # 检查用户是否在黑名单中
     if is_blacklisted(user_id):
@@ -306,6 +307,9 @@ async def show_media_welcome(update, context: CallbackContext):
     """
     snapshot = get_snapshot(context)
     allowed_tags = int(snapshot.get("allowed_tags", 30))
+    max_media_media_mode = int(snapshot.get("max_media_media_mode", 50))
+    require_one = bool(snapshot.get("media_mode_require_one", True))
+    media_required_text = "必选" if require_one else "可选"
     tags_step = (
         "2️⃣ 标签：\n"
         "   - 当前不收集标签，将自动跳过\n\n"
@@ -316,8 +320,8 @@ async def show_media_welcome(update, context: CallbackContext):
     )
     await update.message.reply_text(
         "📮 欢迎使用媒体投稿功能！请按照以下步骤提交：\n\n"
-        "1️⃣ 发送媒体文件（必选）：\n"
-        "   - 支持图片、视频、GIF、音频等，最多上传50个文件。\n"
+        f"1️⃣ 发送媒体文件（{media_required_text}）：\n"
+        f"   - 支持图片、视频、GIF、音频等，最多上传{max_media_media_mode}个文件。\n"
         "   - 📱 请直接发送媒体（非文件附件形式）：\n"
         "     • 从相册选择后直接发送\n"
         "     • 直接发送视频/GIF\n"
@@ -348,6 +352,8 @@ async def show_document_welcome(update, context: CallbackContext):
     snapshot = get_snapshot(context)
     allowed_file_types = str(snapshot.get("allowed_file_types") or "*")
     allowed_tags = int(snapshot.get("allowed_tags", 30))
+    max_docs = int(snapshot.get("max_docs", 10))
+    max_media_default = int(snapshot.get("max_media_default", 10))
     file_validator = create_file_validator(allowed_file_types)
     allowed_types_desc = file_validator.get_allowed_types_description()
     tags_step = (
@@ -361,14 +367,14 @@ async def show_document_welcome(update, context: CallbackContext):
     await update.message.reply_text(
         "📮 欢迎使用文档投稿功能！请按照以下步骤提交：\n\n"
         "1️⃣ 发送文档文件（必选）：\n"
-        "   - 至少上传1个文件，最多上传10个文件。\n"
+        f"   - 至少上传1个文件，最多上传{max_docs}个文件。\n"
         "   - 📎 请以文件附件形式发送：\n"
         "     • 点击聊天输入框旁的📎图标\n"
         "     • 选择文件或文档\n"
         f"   - ✅ 允许的文件类型：\n{allowed_types_desc}\n"
         "   - 上传完毕后，请发送 /done_doc。\n\n"
         "2️⃣ 发送媒体文件（可选）：\n"
-        "   - 支持图片、视频、GIF、音频等，最多上传10个文件。\n"
+        f"   - 支持图片、视频、GIF、音频等，最多上传{max_media_default}个文件。\n"
         "   - 📱 请直接发送媒体（非文件附件形式）：\n"
         "     • 从相册选择后直接发送\n"
         "     • 直接发送视频/GIF\n"

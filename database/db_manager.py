@@ -445,6 +445,28 @@ async def init_db():
             """)
 
             # ============================================
+            # 投稿限制策略（Policy Profiles / Whitelist Users）
+            # ============================================
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS submit_policy_profiles (
+                    profile_id TEXT PRIMARY KEY,
+                    name TEXT,
+                    overrides_json TEXT NOT NULL,
+                    updated_at REAL
+                )
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS submit_policy_users (
+                    user_id INTEGER PRIMARY KEY,
+                    profile_id TEXT NOT NULL,
+                    username TEXT,
+                    note TEXT,
+                    updated_at REAL
+                )
+            """)
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_submit_policy_users_profile_id ON submit_policy_users(profile_id)")
+
+            # ============================================
             # 按钮广告位（Slot Ads）
             # ============================================
             await conn.execute("""

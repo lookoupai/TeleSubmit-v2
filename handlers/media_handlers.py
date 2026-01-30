@@ -33,6 +33,7 @@ async def handle_media(update: Update, context: CallbackContext) -> int:
     """
     logger.info(f"处理媒体输入，user_id: {update.effective_user.id}")
     user_id = update.effective_user.id
+    snapshot = get_snapshot(context)
     new_media = None
 
     if update.message.photo:
@@ -115,8 +116,10 @@ async def handle_media(update: Update, context: CallbackContext) -> int:
             media_list = parse_json_list(row["image_id"])
             mode = get_submission_mode(row)
             
-            # 根据模式设置不同的限制
-            media_limit = 50 if mode == "media" else 10
+            # 根据模式设置不同的限制（来自会话快照：支持白名单放宽）
+            max_media_default = int(snapshot.get("max_media_default", 10))
+            max_media_media_mode = int(snapshot.get("max_media_media_mode", 50))
+            media_limit = max_media_media_mode if mode == "media" else max_media_default
             
             # 限制媒体数量
             if len(media_list) >= media_limit:
@@ -175,8 +178,9 @@ async def done_media(update: Update, context: CallbackContext) -> int:
             media_list = parse_json_list(row["image_id"])
             mode = get_submission_mode(row)
             
-            # 仅媒体模式下要求至少有一个媒体文件
-            if mode == "media" and not media_list:
+            # 仅媒体模式下要求至少有一个媒体文件（可通过策略关闭）
+            require_one = bool(snapshot.get("media_mode_require_one", True))
+            if mode == "media" and require_one and not media_list:
                 await update.message.reply_text("⚠️ 请至少发送一个媒体文件")
                 return STATE['MEDIA']
                 
@@ -233,8 +237,10 @@ async def skip_media(update: Update, context: CallbackContext) -> int:
             # 获取投稿模式
             mode = get_submission_mode(row)
             
-            # 媒体模式下不允许跳过媒体上传
-            if mode == "media":
+            # 媒体模式下默认不允许跳过媒体上传（可通过策略关闭）
+            snapshot = get_snapshot(context)
+            require_one = bool(snapshot.get("media_mode_require_one", True))
+            if mode == "media" and require_one:
                 await update.message.reply_text("⚠️ 在媒体投稿模式下，媒体文件是必选项。请上传至少一个媒体文件。")
                 return STATE['MEDIA']
                 
@@ -351,17 +357,20 @@ async def switch_to_doc_mode(update: Update, context: CallbackContext) -> int:
         # 3. 发送新的欢迎消息（简化版本）
         snapshot = get_snapshot(context)
         allowed_file_types = str(snapshot.get("allowed_file_types") or runtime_settings.bot_allowed_file_types() or "*")
+        max_docs = int(snapshot.get("max_docs", 10))
+        max_media_default = int(snapshot.get("max_media_default", 10))
         file_validator = create_file_validator(allowed_file_types)
         allowed_types_desc = file_validator.get_allowed_types_description()
         welcome_text = (
             "📮 欢迎使用文档投稿功能！请按照以下步骤提交：\n\n"
             "1️⃣ 发送文档文件（必选）：\n"
-            "   - 至少上传1个文件，最多上传10个文件。\n"
+            f"   - 至少上传1个文件，最多上传{max_docs}个文件。\n"
             "   - 点击聊天输入框旁的📎图标选择文件\n"
             f"   - ✅ 允许的文件类型：\n{allowed_types_desc}\n"
             "   - 上传完毕后，发送 /done_doc\n\n"
             "2️⃣ 发送媒体文件（可选）：\n"
             "   - 支持图片、视频、GIF等，直接发送（非附件形式）\n"
+            f"   - 最多上传{max_media_default}个文件\n"
             "   - 上传完毕后发送 /done_media，或发送 /skip_media 跳过\n\n"
             "3️⃣ 接下来按提示发送标签（必选）和其他可选信息\n\n"
             "随时可发送 /cancel 取消投稿"

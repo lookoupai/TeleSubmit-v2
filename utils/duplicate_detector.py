@@ -15,7 +15,7 @@ from utils.feature_extractor import (
     get_feature_extractor,
     FINGERPRINT_VERSION
 )
-from utils import runtime_settings
+from utils.submit_policy import get_effective_policy
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +42,19 @@ class DuplicateDetector:
     def __init__(self):
         self.extractor = get_feature_extractor()
 
-    def _check_window_seconds(self) -> int:
-        return int(runtime_settings.duplicate_check_window_days()) * 86400
+    @staticmethod
+    def _check_window_seconds(policy: dict) -> int:
+        days = int(((policy.get("duplicate_check") or {}).get("window_days")) or 7)
+        return max(1, days) * 86400
 
-    def _threshold(self) -> float:
-        return float(runtime_settings.duplicate_similarity_threshold())
+    @staticmethod
+    def _threshold(policy: dict) -> float:
+        v = (policy.get("duplicate_check") or {}).get("similarity_threshold")
+        try:
+            f = float(v)
+        except Exception:
+            f = 0.8
+        return max(0.0, min(1.0, f))
 
     async def check(self, fingerprint: SubmissionFingerprint) -> DuplicateResult:
         """
@@ -58,40 +66,45 @@ class DuplicateDetector:
         Returns:
             DuplicateResult: 检测结果
         """
-        if not runtime_settings.duplicate_check_enabled():
+        policy = get_effective_policy(int(fingerprint.user_id))
+        dup_cfg = policy.get("duplicate_check") or {}
+        if not bool(dup_cfg.get("enabled", False)):
             return DuplicateResult(is_duplicate=False)
 
-        cutoff_time = time.time() - self._check_window_seconds()
+        cutoff_time = time.time() - self._check_window_seconds(policy)
 
         # 1. 检查频率限制
-        if runtime_settings.rate_limit_enabled():
-            rate_result = await self._check_rate_limit(fingerprint.user_id)
+        rate_cfg = policy.get("rate_limit") or {}
+        if bool(rate_cfg.get("enabled", True)):
+            rate_result = await self._check_rate_limit(
+                user_id=fingerprint.user_id,
+                limit_count=int(rate_cfg.get("count", 3)),
+                window_hours=int(rate_cfg.get("window_hours", 24)),
+            )
             if rate_result.is_duplicate:
                 return rate_result
 
         # 2. 精确匹配检测
-        exact_result = await self._check_exact_matches(fingerprint, cutoff_time)
+        exact_result = await self._check_exact_matches(fingerprint, cutoff_time, policy=policy)
         if exact_result.is_duplicate:
             return exact_result
 
         # 3. 模糊匹配检测（内容相似度）
-        if runtime_settings.duplicate_check_content_hash():
-            fuzzy_result = await self._check_fuzzy_matches(fingerprint, cutoff_time)
+        if bool(dup_cfg.get("check_content_hash", True)):
+            fuzzy_result = await self._check_fuzzy_matches(fingerprint, cutoff_time, policy=policy)
             if fuzzy_result.is_duplicate:
                 return fuzzy_result
 
         # 4. 关联检测（用户签名特征）
-        if runtime_settings.duplicate_check_user_bio():
-            related_result = await self._check_related_submissions(fingerprint, cutoff_time)
+        if bool(dup_cfg.get("check_user_bio", True)):
+            related_result = await self._check_related_submissions(fingerprint, cutoff_time, policy=policy)
             if related_result.is_duplicate:
                 return related_result
 
         return DuplicateResult(is_duplicate=False)
 
-    async def _check_rate_limit(self, user_id: int) -> DuplicateResult:
+    async def _check_rate_limit(self, user_id: int, *, limit_count: int, window_hours: int) -> DuplicateResult:
         """检查投稿频率限制"""
-        window_hours = int(runtime_settings.rate_limit_window_hours())
-        limit_count = int(runtime_settings.rate_limit_count())
         window_seconds = window_hours * 3600
         cutoff_time = time.time() - window_seconds
 
@@ -123,7 +136,9 @@ class DuplicateDetector:
     async def _check_exact_matches(
         self,
         fingerprint: SubmissionFingerprint,
-        cutoff_time: float
+        cutoff_time: float,
+        *,
+        policy: dict,
     ) -> DuplicateResult:
         """
         精确匹配检测
@@ -135,6 +150,7 @@ class DuplicateDetector:
         - 邮箱地址
         """
         matched_features = []
+        dup_cfg = policy.get("duplicate_check") or {}
 
         try:
             async with get_db() as conn:
@@ -154,14 +170,14 @@ class DuplicateDetector:
                     existing_features[key] = (row['id'], row['submit_time'])
 
                 # 检查 URL 匹配
-                if runtime_settings.duplicate_check_urls():
+                if bool(dup_cfg.get("check_urls", True)):
                     for url in fingerprint.urls:
                         key = ('url', url)
                         if key in existing_features:
                             matched_features.append(key)
 
                 # 检查 Telegram 链接匹配
-                if runtime_settings.duplicate_check_tg_links():
+                if bool(dup_cfg.get("check_tg_links", True)):
                     for tg_link in fingerprint.tg_links:
                         key = ('tg_link', tg_link)
                         if key in existing_features:
@@ -173,7 +189,7 @@ class DuplicateDetector:
                             matched_features.append(key)
 
                 # 检查联系方式匹配
-                if runtime_settings.duplicate_check_contacts():
+                if bool(dup_cfg.get("check_contacts", True)):
                     for phone in fingerprint.phone_numbers:
                         key = ('phone', phone)
                         if key in existing_features:
@@ -210,7 +226,9 @@ class DuplicateDetector:
     async def _check_fuzzy_matches(
         self,
         fingerprint: SubmissionFingerprint,
-        cutoff_time: float
+        cutoff_time: float,
+        *,
+        policy: dict,
     ) -> DuplicateResult:
         """
         模糊匹配检测
@@ -245,7 +263,7 @@ class DuplicateDetector:
                     # 距离 <= 3 通常认为是相似内容
                     similarity = 1 - (distance / 64)
 
-                    if similarity >= self._threshold():
+                    if similarity >= self._threshold(policy):
                         logger.info(f"检测到模糊匹配: user_id={fingerprint.user_id}, "
                                   f"similarity={similarity:.2f}, distance={distance}")
 
@@ -267,7 +285,9 @@ class DuplicateDetector:
     async def _check_related_submissions(
         self,
         fingerprint: SubmissionFingerprint,
-        cutoff_time: float
+        cutoff_time: float,
+        *,
+        policy: dict,
     ) -> DuplicateResult:
         """
         关联检测
@@ -437,7 +457,8 @@ class DuplicateDetector:
         Returns:
             int: 清理的记录数
         """
-        cutoff_time = time.time() - self._check_window_seconds()
+        # 清理按“全局默认窗口”执行（用户级策略仅影响拦截，不影响历史清理）
+        cutoff_time = time.time() - self._check_window_seconds(get_effective_policy(0))
 
         try:
             async with get_db() as conn:

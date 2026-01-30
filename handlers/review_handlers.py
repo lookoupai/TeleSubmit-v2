@@ -20,6 +20,7 @@ from utils.ai_reviewer import get_ai_reviewer, ReviewResult
 from utils.duplicate_detector import get_duplicate_detector, DuplicateResult
 from utils.feature_extractor import get_feature_extractor
 from utils.paid_ad_service import get_balance
+from utils.submit_policy import get_effective_policy
 from utils import runtime_settings
 
 logger = logging.getLogger(__name__)
@@ -45,12 +46,12 @@ def _format_duration(seconds: float) -> str:
     return "".join(parts)
 
 
-def _build_duplicate_wait_hint(original_submit_time: float) -> str:
+def _build_duplicate_wait_hint(original_submit_time: float, *, window_days: int) -> str:
     """构建重复投稿的等待提示（上次时间/剩余等待/可再次投稿时间）。"""
     if not original_submit_time:
         return ""
 
-    window_days = int(runtime_settings.duplicate_check_window_days())
+    window_days = int(window_days)
     last_dt = datetime.fromtimestamp(original_submit_time)
     available_at_ts = original_submit_time + (window_days * 86400)
     available_dt = datetime.fromtimestamp(available_at_ts)
@@ -88,19 +89,20 @@ async def perform_review(
     user_id = user_info.get('user_id')
     username = user_info.get('username', '')
     user_bio = user_info.get('bio', '')
+    policy = get_effective_policy(int(user_id))
 
     # 构建完整内容用于审核
     content = _build_content_for_review(submission_data)
 
     # 1. 重复检测
-    if runtime_settings.duplicate_check_enabled():
+    if bool((policy.get("duplicate_check") or {}).get("enabled", False)):
         dup_result = await _check_duplicate(user_id, username, content, user_bio)
         if dup_result.is_duplicate:
             should_block = (
                 dup_result.duplicate_type == "rate_limit"
-                or runtime_settings.duplicate_auto_reject_duplicate()
+                or bool((policy.get("duplicate_check") or {}).get("auto_reject", True))
             )
-            await _handle_duplicate_result(update, context, dup_result, user_info, blocked=should_block)
+            await _handle_duplicate_result(update, context, dup_result, user_info, policy=policy, blocked=should_block)
             if should_block:
                 return (False, False, dup_result.message)
 
@@ -165,14 +167,16 @@ async def _handle_duplicate_result(
     result: DuplicateResult,
     user_info: dict,
     *,
+    policy: dict,
     blocked: bool = True,
 ):
     """处理重复检测结果"""
     user_id = user_info.get('user_id')
     username = user_info.get('username', '')
 
+    dup_cfg = policy.get("duplicate_check") or {}
     # 通知用户
-    if blocked and runtime_settings.duplicate_notify_user_duplicate():
+    if blocked and bool(dup_cfg.get("notify_user", True)):
         if result.duplicate_type == 'rate_limit':
             message = (
                 "⚠️ 投稿频率超限\n\n"
@@ -180,9 +184,9 @@ async def _handle_duplicate_result(
                 "请稍后再试，或联系管理员。"
             )
         else:
-            wait_hint = _build_duplicate_wait_hint(result.original_submit_time)
+            window_days = int(dup_cfg.get("window_days", 7))
+            wait_hint = _build_duplicate_wait_hint(result.original_submit_time, window_days=window_days)
             detail = result.message if not wait_hint else f"{result.message}\n\n{wait_hint}"
-            window_days = int(runtime_settings.duplicate_check_window_days())
             message = (
                 "⚠️ 检测到重复投稿\n\n"
                 f"{detail}\n\n"

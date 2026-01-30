@@ -302,6 +302,12 @@ async def main():
         await refresh_runtime_settings()
     except Exception as e:
         logger.warning(f"运行时配置加载失败（可忽略，将使用静态配置）: {e}")
+    # 初始化投稿限制策略（白名单/档位）
+    try:
+        from utils.submit_policy import init_submit_policy
+        await init_submit_policy()
+    except Exception as e:
+        logger.warning(f"投稿策略初始化失败（可忽略，将仅使用全局默认）: {e}")
     # 初始化用户会话数据库
     initialize_database()
     # 初始化黑名单

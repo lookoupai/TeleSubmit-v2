@@ -68,6 +68,12 @@ KEY_BOT_ALLOWED_FILE_TYPES = "bot.allowed_file_types"
 KEY_BOT_SHOW_SUBMITTER = "bot.show_submitter"
 KEY_BOT_NOTIFY_OWNER = "bot.notify_owner"
 
+# 上传限制（热更新）
+KEY_UPLOAD_MAX_DOCS = "upload.max_docs"
+KEY_UPLOAD_MAX_MEDIA_DEFAULT = "upload.max_media_default"
+KEY_UPLOAD_MAX_MEDIA_MEDIA_MODE = "upload.max_media_media_mode"
+KEY_UPLOAD_MEDIA_MODE_REQUIRE_ONE = "upload.media_mode_require_one"
+
 # 重复检测/限流（热更新）
 KEY_DUPLICATE_CHECK_ENABLED = "duplicate_check.enabled"
 KEY_DUPLICATE_CHECK_WINDOW_DAYS = "duplicate_check.window_days"
@@ -475,6 +481,38 @@ def bot_notify_owner() -> bool:
     return get_bool(KEY_BOT_NOTIFY_OWNER, bool(fallback))
 
 
+def upload_max_docs() -> int:
+    """
+    单次投稿最多文档数量（doc_list 上限）。
+    """
+    fallback = 10
+    return max(1, min(50, get_int(KEY_UPLOAD_MAX_DOCS, int(fallback))))
+
+
+def upload_max_media_default() -> int:
+    """
+    非媒体模式下，单次投稿最多媒体数量（media_list 上限）。
+    """
+    fallback = 10
+    return max(0, min(50, get_int(KEY_UPLOAD_MAX_MEDIA_DEFAULT, int(fallback))))
+
+
+def upload_max_media_media_mode() -> int:
+    """
+    媒体模式下，单次投稿最多媒体数量（media_list 上限）。
+    """
+    fallback = 50
+    return max(1, min(200, get_int(KEY_UPLOAD_MAX_MEDIA_MEDIA_MODE, int(fallback))))
+
+
+def upload_media_mode_require_one() -> bool:
+    """
+    媒体模式下是否要求至少上传 1 个媒体文件。
+    """
+    fallback = True
+    return get_bool(KEY_UPLOAD_MEDIA_MODE_REQUIRE_ONE, bool(fallback))
+
+
 def duplicate_check_enabled() -> bool:
     fallback = bool(getattr(static, "DUPLICATE_CHECK_ENABLED", False))
     return get_bool(KEY_DUPLICATE_CHECK_ENABLED, bool(fallback))
@@ -698,3 +736,18 @@ def validate_rate_limit(*, count: int, window_hours: int) -> None:
         raise ValueError("RATE_LIMIT_COUNT 范围应为 1~20")
     if w <= 0 or w > 168:
         raise ValueError("RATE_LIMIT_WINDOW_HOURS 范围应为 1~168")
+
+
+def validate_upload_limits(*, max_docs: int, max_media_default: int, max_media_media_mode: int) -> None:
+    try:
+        d = int(max_docs)
+        m1 = int(max_media_default)
+        m2 = int(max_media_media_mode)
+    except Exception:
+        raise ValueError("上传数量限制必须是整数")
+    if d <= 0 or d > 50:
+        raise ValueError("MAX_DOCS 范围应为 1~50")
+    if m1 < 0 or m1 > 50:
+        raise ValueError("MAX_MEDIA_DEFAULT 范围应为 0~50")
+    if m2 <= 0 or m2 > 200:
+        raise ValueError("MAX_MEDIA_MEDIA_MODE 范围应为 1~200")

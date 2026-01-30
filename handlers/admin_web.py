@@ -47,6 +47,7 @@ from utils.fallback_publish_service import (
     update_pool_item as fallback_update_pool_item,
 )
 from utils import runtime_settings
+from utils import submit_policy
 
 logger = logging.getLogger(__name__)
 
@@ -145,16 +146,17 @@ def _html_page(*, title: str, body: str) -> web.Response:
   <header>
     <div class="title">{html.escape(ADMIN_WEB_TITLE)}</div>
     <div class="meta">服务器时间：{html.escape(_now_text())}</div>
-	    <div class="nav" style="margin-left:auto">
-	      <a href="{ADMIN_WEB_PATH}">首页</a>
-	      <a href="{ADMIN_WEB_PATH}/submit">投稿设置</a>
-	      <a href="{ADMIN_WEB_PATH}/schedule">定时发布</a>
-	      <a href="{ADMIN_WEB_PATH}/fallback">兜底定时</a>
-	      <a href="{ADMIN_WEB_PATH}/slots">广告位</a>
-	      <a href="{ADMIN_WEB_PATH}/ads">广告参数</a>
-	      <a href="{ADMIN_WEB_PATH}/ai">AI审核</a>
-	      <a href="{ADMIN_WEB_PATH}/logout">退出</a>
-	    </div>
+		    <div class="nav" style="margin-left:auto">
+		      <a href="{ADMIN_WEB_PATH}">首页</a>
+		      <a href="{ADMIN_WEB_PATH}/submit">投稿设置</a>
+		      <a href="{ADMIN_WEB_PATH}/whitelist">投稿白名单</a>
+		      <a href="{ADMIN_WEB_PATH}/schedule">定时发布</a>
+		      <a href="{ADMIN_WEB_PATH}/fallback">兜底定时</a>
+		      <a href="{ADMIN_WEB_PATH}/slots">广告位</a>
+		      <a href="{ADMIN_WEB_PATH}/ads">广告参数</a>
+		      <a href="{ADMIN_WEB_PATH}/ai">AI审核</a>
+		      <a href="{ADMIN_WEB_PATH}/logout">退出</a>
+		    </div>
 	  </header>
   <main>
     {body}
@@ -205,14 +207,15 @@ async def index(request: web.Request) -> web.Response:
     body = f"""
 	<div class="card">
 	  <h2 style="margin-top:0">概览</h2>
-	  <div class="row">
-	    <a href="{base}/submit"><button>投稿设置</button></a>
-	    <a href="{base}/schedule"><button>管理定时发布</button></a>
-	    <a href="{base}/fallback"><button>管理兜底定时</button></a>
-	    <a href="{base}/slots"><button>管理广告位</button></a>
-	    <a href="{base}/ads"><button>管理广告参数</button></a>
-	    <a href="{base}/ai"><button>管理 AI 审核</button></a>
-	  </div>
+		  <div class="row">
+		    <a href="{base}/submit"><button>投稿设置</button></a>
+		    <a href="{base}/whitelist"><button>投稿白名单</button></a>
+		    <a href="{base}/schedule"><button>管理定时发布</button></a>
+		    <a href="{base}/fallback"><button>管理兜底定时</button></a>
+		    <a href="{base}/slots"><button>管理广告位</button></a>
+		    <a href="{base}/ads"><button>管理广告参数</button></a>
+		    <a href="{base}/ai"><button>管理 AI 审核</button></a>
+		  </div>
 	  <p style="opacity:.75;margin-bottom:0">本后台仅管理已落库的热更新项；修改 <code>config.ini</code> 类配置仍需要重启生效。</p>
 	</div>
 	"""
@@ -578,6 +581,10 @@ async def submit_get(request: web.Request) -> web.Response:
     allowed_file_types = str(runtime_settings.bot_allowed_file_types() or "").strip() or "*"
     show_submitter = bool(runtime_settings.bot_show_submitter())
     notify_owner = bool(runtime_settings.bot_notify_owner())
+    max_docs = int(runtime_settings.upload_max_docs())
+    max_media_default = int(runtime_settings.upload_max_media_default())
+    max_media_media_mode = int(runtime_settings.upload_max_media_media_mode())
+    media_mode_require_one = bool(runtime_settings.upload_media_mode_require_one())
 
     dup_enabled = bool(runtime_settings.duplicate_check_enabled())
     dup_window_days = int(runtime_settings.duplicate_check_window_days())
@@ -607,8 +614,8 @@ async def submit_get(request: web.Request) -> web.Response:
   <form method="post" action="{ADMIN_WEB_PATH}/submit">
     <input type="hidden" name="action" value="save" />
 
-    <h3 style="margin-top:0" id="basic">基础限制</h3>
-    <div class="grid">
+	    <h3 style="margin-top:0" id="basic">基础限制</h3>
+	    <div class="grid">
       <div>
         <label>最小字数（来源：{_src(runtime_settings.KEY_BOT_MIN_TEXT_LENGTH)}）</label>
         <input type="text" name="bot_min_text_length" value="{html.escape(str(min_len))}" />
@@ -632,19 +639,42 @@ async def submit_get(request: web.Request) -> web.Response:
           <option value="0" {_bool_selected(show_submitter, False)}>关闭</option>
         </select>
       </div>
-      <div>
-        <label>通知所有者（来源：{_src(runtime_settings.KEY_BOT_NOTIFY_OWNER)}）</label>
-        <select name="bot_notify_owner">
-          <option value="1" {_bool_selected(notify_owner, True)}>开启</option>
-          <option value="0" {_bool_selected(notify_owner, False)}>关闭</option>
-        </select>
-      </div>
-    </div>
+	      <div>
+	        <label>通知所有者（来源：{_src(runtime_settings.KEY_BOT_NOTIFY_OWNER)}）</label>
+	        <select name="bot_notify_owner">
+	          <option value="1" {_bool_selected(notify_owner, True)}>开启</option>
+	          <option value="0" {_bool_selected(notify_owner, False)}>关闭</option>
+	        </select>
+	      </div>
+	    </div>
 
-    <div style="height:14px"></div>
+	    <div style="height:14px"></div>
 
-    <h3 style="margin:0 0 8px" id="duplicate">重复检测 & 频率限制</h3>
-    <div class="grid">
+	    <h3 style="margin:0 0 8px" id="upload">上传限制</h3>
+	    <div class="grid">
+	      <div>
+	        <label>最多文档数量（来源：{_src(runtime_settings.KEY_UPLOAD_MAX_DOCS)}）</label>
+	        <input type="text" name="upload_max_docs" value="{html.escape(str(max_docs))}" />
+	      </div>
+	      <div>
+	        <label>最多媒体数量（非媒体模式）（来源：{_src(runtime_settings.KEY_UPLOAD_MAX_MEDIA_DEFAULT)}）</label>
+	        <input type="text" name="upload_max_media_default" value="{html.escape(str(max_media_default))}" />
+	      </div>
+	      <div>
+	        <label>最多媒体数量（媒体模式）（来源：{_src(runtime_settings.KEY_UPLOAD_MAX_MEDIA_MEDIA_MODE)}）</label>
+	        <input type="text" name="upload_max_media_media_mode" value="{html.escape(str(max_media_media_mode))}" />
+	      </div>
+	      <div>
+	        <label>媒体模式必须至少 1 个媒体（来源：{_src(runtime_settings.KEY_UPLOAD_MEDIA_MODE_REQUIRE_ONE)}）</label>
+	        <select name="upload_media_mode_require_one">
+	          <option value="1" {_bool_selected(media_mode_require_one, True)}>开启</option>
+	          <option value="0" {_bool_selected(media_mode_require_one, False)}>关闭</option>
+	        </select>
+	      </div>
+	    </div>
+
+	    <h3 style="margin:0 0 8px" id="duplicate">重复检测 & 频率限制</h3>
+	    <div class="grid">
       <div>
         <label>启用重复检测（来源：{_src(runtime_settings.KEY_DUPLICATE_CHECK_ENABLED)}）</label>
         <select name="dup_enabled">
@@ -770,6 +800,10 @@ async def submit_post(request: web.Request) -> web.Response:
         runtime_settings.KEY_BOT_ALLOWED_FILE_TYPES,
         runtime_settings.KEY_BOT_SHOW_SUBMITTER,
         runtime_settings.KEY_BOT_NOTIFY_OWNER,
+        runtime_settings.KEY_UPLOAD_MAX_DOCS,
+        runtime_settings.KEY_UPLOAD_MAX_MEDIA_DEFAULT,
+        runtime_settings.KEY_UPLOAD_MAX_MEDIA_MEDIA_MODE,
+        runtime_settings.KEY_UPLOAD_MEDIA_MODE_REQUIRE_ONE,
         runtime_settings.KEY_DUPLICATE_CHECK_ENABLED,
         runtime_settings.KEY_DUPLICATE_CHECK_WINDOW_DAYS,
         runtime_settings.KEY_DUPLICATE_SIMILARITY_THRESHOLD,
@@ -808,6 +842,16 @@ async def submit_post(request: web.Request) -> web.Response:
         show_submitter = _t("bot_show_submitter") == "1"
         notify_owner = _t("bot_notify_owner") == "1"
 
+        upload_max_docs = int(_t("upload_max_docs") or "0")
+        upload_max_media_default = int(_t("upload_max_media_default") or "0")
+        upload_max_media_media_mode = int(_t("upload_max_media_media_mode") or "0")
+        runtime_settings.validate_upload_limits(
+            max_docs=upload_max_docs,
+            max_media_default=upload_max_media_default,
+            max_media_media_mode=upload_max_media_media_mode,
+        )
+        upload_media_mode_require_one = _t("upload_media_mode_require_one") == "1"
+
         dup_enabled = _t("dup_enabled") == "1"
         dup_window_days = int(_t("dup_window_days") or "0")
         runtime_settings.validate_duplicate_check_window_days(dup_window_days)
@@ -840,6 +884,10 @@ async def submit_post(request: web.Request) -> web.Response:
         runtime_settings.KEY_BOT_ALLOWED_FILE_TYPES: str(allowed_file_types).strip(),
         runtime_settings.KEY_BOT_SHOW_SUBMITTER: "1" if show_submitter else "0",
         runtime_settings.KEY_BOT_NOTIFY_OWNER: "1" if notify_owner else "0",
+        runtime_settings.KEY_UPLOAD_MAX_DOCS: str(upload_max_docs),
+        runtime_settings.KEY_UPLOAD_MAX_MEDIA_DEFAULT: str(upload_max_media_default),
+        runtime_settings.KEY_UPLOAD_MAX_MEDIA_MEDIA_MODE: str(upload_max_media_media_mode),
+        runtime_settings.KEY_UPLOAD_MEDIA_MODE_REQUIRE_ONE: "1" if upload_media_mode_require_one else "0",
         runtime_settings.KEY_DUPLICATE_CHECK_ENABLED: "1" if dup_enabled else "0",
         runtime_settings.KEY_DUPLICATE_CHECK_WINDOW_DAYS: str(dup_window_days),
         runtime_settings.KEY_DUPLICATE_SIMILARITY_THRESHOLD: str(dup_similarity_threshold),
@@ -857,6 +905,258 @@ async def submit_post(request: web.Request) -> web.Response:
         runtime_settings.KEY_RATING_ALLOW_UPDATE: "1" if rating_allow_update else "0",
     })
     raise web.HTTPFound(location=f"{ADMIN_WEB_PATH}/submit")
+
+
+def _safe_json_textarea_value(obj: Any) -> str:
+    try:
+        return json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True)
+    except Exception:
+        return "{}"
+
+
+async def whitelist_users_get(request: web.Request) -> web.Response:
+    _require_auth(request)
+    base = ADMIN_WEB_PATH.rstrip("/")
+
+    profiles = submit_policy.list_profiles()
+    users = submit_policy.list_users()
+
+    profile_options = "\n".join(
+        f"<option value=\"{html.escape(p.profile_id)}\">{html.escape(p.profile_id)} - {html.escape(p.name)}</option>"
+        for p in profiles
+    )
+
+    rows = []
+    for u in users:
+        rows.append(
+            f"""
+            <tr>
+              <td>{html.escape(str(u.user_id))}</td>
+              <td>{html.escape(u.profile_id)}</td>
+              <td>{html.escape(u.username or '-')}</td>
+              <td>{html.escape(u.note or '-')}</td>
+              <td>
+                <form method="post" action="{ADMIN_WEB_PATH}/whitelist" class="row" style="margin:0">
+                  <input type="hidden" name="action" value="user_delete" />
+                  <input type="hidden" name="user_id" value="{html.escape(str(u.user_id))}" />
+                  <button type="submit" class="danger">移除</button>
+                </form>
+              </td>
+            </tr>
+            """
+        )
+
+    if not profiles:
+        add_hint = (
+            f"<p style='opacity:.75;margin:0'>尚未创建策略档位，请先到 "
+            f"<a href='{base}/whitelist/profiles'>策略档位</a> 新建。</p>"
+        )
+    else:
+        add_hint = ""
+
+    body = f"""
+<div class="card">
+  <h2 style="margin-top:0">投稿白名单</h2>
+  <p style="opacity:.75;margin:0">白名单用户会绑定到某个“策略档位（Profile）”，以放宽/关闭常见限制（热更新）。</p>
+  <div style="height:8px"></div>
+  <div class="row">
+    <a href="{base}/whitelist/profiles"><button>管理策略档位</button></a>
+    <a href="{base}/submit#basic"><button>全局默认（投稿设置）</button></a>
+  </div>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0">添加/更新白名单用户</h3>
+  {add_hint}
+  <form method="post" action="{ADMIN_WEB_PATH}/whitelist">
+    <input type="hidden" name="action" value="user_save" />
+    <div class="grid">
+      <div>
+        <label>用户 ID（数字）</label>
+        <input type="text" name="user_id" placeholder="例如 123456789" />
+      </div>
+      <div>
+        <label>策略档位（Profile）</label>
+        <select name="profile_id">
+          {profile_options}
+        </select>
+      </div>
+      <div>
+        <label>用户名（可选，仅用于展示）</label>
+        <input type="text" name="username" placeholder="@someone（可不填）" />
+      </div>
+      <div>
+        <label>备注（可选）</label>
+        <input type="text" name="note" placeholder="例如 赞助/VIP/特殊合作" />
+      </div>
+    </div>
+    <div style="height:12px"></div>
+    <button type="submit" {"disabled" if not profiles else ""}>保存</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0">当前白名单用户</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>user_id</th>
+        <th>profile</th>
+        <th>username</th>
+        <th>note</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {''.join(rows) if rows else '<tr><td colspan=\"5\" style=\"opacity:.75\">暂无白名单用户</td></tr>'}
+    </tbody>
+  </table>
+</div>
+"""
+    return _html_page(title="投稿白名单", body=body)
+
+
+async def whitelist_users_post(request: web.Request) -> web.Response:
+    _require_auth(request)
+    form = await request.post()
+    action = str(form.get("action") or "").strip().lower()
+
+    try:
+        if action == "user_save":
+            user_id = int(str(form.get("user_id") or "0").strip())
+            profile_id = str(form.get("profile_id") or "").strip()
+            username = str(form.get("username") or "").strip()
+            note = str(form.get("note") or "").strip()
+            if user_id <= 0:
+                raise ValueError("user_id 必须是正整数")
+            await submit_policy.upsert_user(user_id=user_id, profile_id=profile_id, username=username, note=note)
+        elif action == "user_delete":
+            user_id = int(str(form.get("user_id") or "0").strip())
+            if user_id <= 0:
+                raise ValueError("user_id 必须是正整数")
+            await submit_policy.delete_user(user_id=user_id)
+        else:
+            raise ValueError("不支持的 action")
+    except Exception as e:
+        return _html_page(title="保存失败", body=f"<div class='card'><h2 style='margin-top:0'>保存失败</h2><p>{html.escape(str(e))}</p></div>")
+
+    raise web.HTTPFound(location=f"{ADMIN_WEB_PATH}/whitelist")
+
+
+async def whitelist_profiles_get(request: web.Request) -> web.Response:
+    _require_auth(request)
+    base = ADMIN_WEB_PATH.rstrip("/")
+
+    profiles = submit_policy.list_profiles()
+    users = submit_policy.list_users()
+    used_count: Dict[str, int] = {}
+    for u in users:
+        used_count[u.profile_id] = used_count.get(u.profile_id, 0) + 1
+
+    example = {
+        "duplicate_check": {"auto_reject": False},
+        "rate_limit": {"enabled": False},
+        "upload_limits": {"max_media_media_mode": 80},
+    }
+
+    profile_cards = []
+    for p in profiles:
+        count = used_count.get(p.profile_id, 0)
+        profile_cards.append(
+            f"""
+            <div class="card">
+              <h3 style="margin-top:0">{html.escape(p.profile_id)} <span class="pill">users: {count}</span></h3>
+              <form method="post" action="{ADMIN_WEB_PATH}/whitelist/profiles">
+                <input type="hidden" name="action" value="profile_save" />
+                <input type="hidden" name="profile_id" value="{html.escape(p.profile_id)}" />
+                <div class="grid">
+                  <div>
+                    <label>名称</label>
+                    <input type="text" name="name" value="{html.escape(p.name)}" />
+                  </div>
+                  <div>
+                    <label>overrides_json（只写要覆盖的字段；未写则继承全局默认）</label>
+                    <textarea name="overrides_json">{html.escape(_safe_json_textarea_value(p.overrides))}</textarea>
+                  </div>
+                </div>
+                <div class="row" style="margin-top:10px">
+                  <button type="submit">保存</button>
+                  <button type="submit" name="action" value="profile_delete" class="danger" formaction="{ADMIN_WEB_PATH}/whitelist/profiles" formmethod="post"
+                    onclick="return confirm('确认删除该策略档位？（若仍被用户使用将被拒绝）');"
+                  >删除</button>
+                </div>
+              </form>
+            </div>
+            """
+        )
+
+    body = f"""
+<div class="card">
+  <h2 style="margin-top:0">策略档位（Profiles）</h2>
+  <p style="opacity:.75;margin:0">
+    说明：Profile 仅存“覆盖项”，未填写的字段会继承全局默认（见 <a href="{base}/submit">投稿设置</a>）。
+    修改后立即生效（多实例部署可能存在短暂延迟）。
+  </p>
+  <div style="height:8px"></div>
+  <div class="row">
+    <a href="{base}/whitelist"><button>返回白名单用户</button></a>
+  </div>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0">新建策略档位</h3>
+  <form method="post" action="{ADMIN_WEB_PATH}/whitelist/profiles">
+    <input type="hidden" name="action" value="profile_save" />
+    <div class="grid">
+      <div>
+        <label>profile_id（英文/数字/下划线，建议如 trusted/vip）</label>
+        <input type="text" name="profile_id" placeholder="trusted" />
+      </div>
+      <div>
+        <label>名称（可选）</label>
+        <input type="text" name="name" placeholder="可信投稿人" />
+      </div>
+      <div>
+        <label>overrides_json（示例）</label>
+        <textarea name="overrides_json">{html.escape(_safe_json_textarea_value(example))}</textarea>
+      </div>
+    </div>
+    <div style="height:12px"></div>
+    <button type="submit">创建/保存</button>
+  </form>
+  <p style="opacity:.75;margin-bottom:0">
+    支持的字段：rate_limit / duplicate_check / text_length / tags / file_types / upload_limits / bot / rating。
+  </p>
+</div>
+
+{''.join(profile_cards) if profile_cards else "<div class='card' style='opacity:.75'>暂无策略档位</div>"}
+"""
+    return _html_page(title="策略档位", body=body)
+
+
+async def whitelist_profiles_post(request: web.Request) -> web.Response:
+    _require_auth(request)
+    form = await request.post()
+    action = str(form.get("action") or "").strip().lower()
+
+    try:
+        if action == "profile_save":
+            profile_id = str(form.get("profile_id") or "").strip()
+            name = str(form.get("name") or "").strip()
+            overrides_raw = str(form.get("overrides_json") or "").strip() or "{}"
+            overrides = json.loads(overrides_raw)
+            if not isinstance(overrides, dict):
+                raise ValueError("overrides_json 必须是 JSON object")
+            await submit_policy.upsert_profile(profile_id=profile_id, name=name, overrides=overrides)
+        elif action == "profile_delete":
+            profile_id = str(form.get("profile_id") or "").strip()
+            await submit_policy.delete_profile(profile_id=profile_id)
+        else:
+            raise ValueError("不支持的 action")
+    except Exception as e:
+        return _html_page(title="保存失败", body=f"<div class='card'><h2 style='margin-top:0'>保存失败</h2><p>{html.escape(str(e))}</p></div>")
+
+    raise web.HTTPFound(location=f"{ADMIN_WEB_PATH}/whitelist/profiles")
 
 
 async def duplicate_get(request: web.Request) -> web.Response:
@@ -1645,6 +1945,10 @@ def build_admin_routes() -> List[Tuple[str, str, Any]]:
         ("GET", f"{base}/logout", logout),
         ("GET", f"{base}/submit", submit_get),
         ("POST", f"{base}/submit", submit_post),
+        ("GET", f"{base}/whitelist", whitelist_users_get),
+        ("POST", f"{base}/whitelist", whitelist_users_post),
+        ("GET", f"{base}/whitelist/profiles", whitelist_profiles_get),
+        ("POST", f"{base}/whitelist/profiles", whitelist_profiles_post),
         ("GET", f"{base}/schedule", schedule_get),
         ("POST", f"{base}/schedule", schedule_post),
         ("GET", f"{base}/fallback", fallback_get),

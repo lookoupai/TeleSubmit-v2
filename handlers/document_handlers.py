@@ -82,9 +82,10 @@ async def handle_doc(update: Update, context: CallbackContext) -> int:
             except (json.JSONDecodeError, TypeError):
                 doc_list = []
             
-            # 限制文档数量为10个
-            if len(doc_list) >= 10:
-                await safe_send(update.message.reply_text, "⚠️ 已达到文档上传上限（10个）")
+            max_docs = int(snapshot.get("max_docs", 10))
+            # 限制文档数量
+            if len(doc_list) >= max_docs:
+                await safe_send(update.message.reply_text, f"⚠️ 已达到文档上传上限（{max_docs}个）")
                 return STATE['DOC']
                 
             doc_list.append(new_doc)
@@ -167,6 +168,8 @@ async def done_doc(update: Update, context: CallbackContext) -> int:
             mode = mode.lower() if mode else "mixed"
             
             # 不论什么模式，完成文档上传后都进入媒体上传阶段
+            snapshot = get_snapshot(context)
+            max_media_default = int(snapshot.get("max_media_default", 10))
             await safe_send(
                 update.message.reply_text,
                 "✅ 文档接收完成。\n现在请发送媒体文件（可选）：\n\n"
@@ -175,7 +178,7 @@ async def done_doc(update: Update, context: CallbackContext) -> int:
                 "• 视频：直接发送视频（非文件形式）\n"
                 "• GIF：直接发送GIF动图\n"
                 "• 音频：直接发送语音或音频\n\n"
-                "最多上传10个文件。\n"
+                f"最多上传{max_media_default}个文件。\n"
                 "发送完毕后，请发送 /done_media，或发送 /skip_media 跳过媒体上传步骤。"
             )
             return STATE['MEDIA']
