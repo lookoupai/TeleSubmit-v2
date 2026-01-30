@@ -914,6 +914,223 @@ def _safe_json_textarea_value(obj: Any) -> str:
         return "{}"
 
 
+def _tri_bool_selected(value: Optional[bool], expected: Optional[bool]) -> str:
+    return "selected" if value is expected else ""
+
+
+def _tri_bool_select(*, name: str, value: Optional[bool], label_inherit: str = "继承（全局默认）") -> str:
+    return (
+        f"<select name=\"{html.escape(name)}\">"
+        f"<option value=\"\" {_tri_bool_selected(value, None)}>{html.escape(label_inherit)}</option>"
+        f"<option value=\"1\" {_tri_bool_selected(value, True)}>开启</option>"
+        f"<option value=\"0\" {_tri_bool_selected(value, False)}>关闭</option>"
+        f"</select>"
+    )
+
+
+def _ov_get(overrides: Any, section: str, key: str) -> Any:
+    if not isinstance(overrides, dict):
+        return None
+    sec = overrides.get(section)
+    if not isinstance(sec, dict):
+        return None
+    return sec.get(key)
+
+
+def _ov_bool(overrides: Any, section: str, key: str) -> Optional[bool]:
+    v = _ov_get(overrides, section, key)
+    if isinstance(v, bool):
+        return v
+    return None
+
+
+def _ov_num_str(overrides: Any, section: str, key: str) -> str:
+    v = _ov_get(overrides, section, key)
+    if v is None:
+        return ""
+    return str(v)
+
+
+def _profile_simple_fields(*, overrides: dict) -> str:
+    """
+    小白友好的策略档位编辑表单：
+    - 布尔：三态（继承/开启/关闭）
+    - 数值：留空=继承
+    """
+    # 频率限制
+    rl_enabled = _ov_bool(overrides, "rate_limit", "enabled")
+    rl_count = _ov_num_str(overrides, "rate_limit", "count")
+    rl_window = _ov_num_str(overrides, "rate_limit", "window_hours")
+
+    # 重复检测
+    dc_enabled = _ov_bool(overrides, "duplicate_check", "enabled")
+    dc_window = _ov_num_str(overrides, "duplicate_check", "window_days")
+    dc_threshold = _ov_num_str(overrides, "duplicate_check", "similarity_threshold")
+    dc_urls = _ov_bool(overrides, "duplicate_check", "check_urls")
+    dc_contacts = _ov_bool(overrides, "duplicate_check", "check_contacts")
+    dc_tg = _ov_bool(overrides, "duplicate_check", "check_tg_links")
+    dc_bio = _ov_bool(overrides, "duplicate_check", "check_user_bio")
+    dc_hash = _ov_bool(overrides, "duplicate_check", "check_content_hash")
+    dc_auto_reject = _ov_bool(overrides, "duplicate_check", "auto_reject")
+    dc_notify_user = _ov_bool(overrides, "duplicate_check", "notify_user")
+
+    # 基础限制
+    tl_min = _ov_num_str(overrides, "text_length", "min_len")
+    tl_max = _ov_num_str(overrides, "text_length", "max_len")
+    tags_enabled = _ov_bool(overrides, "tags", "enabled")
+    tags_max = _ov_num_str(overrides, "tags", "max_tags")
+    allowed_file_types = str(_ov_get(overrides, "file_types", "allowed_file_types") or "")
+
+    # 上传限制
+    ul_docs = _ov_num_str(overrides, "upload_limits", "max_docs")
+    ul_media_default = _ov_num_str(overrides, "upload_limits", "max_media_default")
+    ul_media_media_mode = _ov_num_str(overrides, "upload_limits", "max_media_media_mode")
+    ul_media_req_one = _ov_bool(overrides, "upload_limits", "media_mode_require_one")
+
+    # 其它
+    bot_show_submitter = _ov_bool(overrides, "bot", "show_submitter")
+    bot_notify_owner = _ov_bool(overrides, "bot", "notify_owner")
+    rating_enabled = _ov_bool(overrides, "rating", "enabled")
+    rating_allow_update = _ov_bool(overrides, "rating", "allow_update")
+
+    def _num_input(name: str, value: str, placeholder: str) -> str:
+        return (
+            f"<input type=\"text\" name=\"{html.escape(name)}\" value=\"{html.escape(value)}\" "
+            f"placeholder=\"{html.escape(placeholder)}\" />"
+        )
+
+    return f"""
+    <div class="card" style="margin-top:10px">
+      <h4 style="margin:0 0 10px">简单模式（推荐）</h4>
+      <p style="opacity:.75;margin:0 0 10px">留空/继承 = 使用全局默认（见“投稿设置”页面）。</p>
+
+      <h4 style="margin:10px 0 8px">频率限制</h4>
+      <div class="grid">
+        <div>
+          <label>启用</label>
+          {_tri_bool_select(name="rl_enabled", value=rl_enabled)}
+        </div>
+        <div>
+          <label>次数上限（1~20，留空=继承）</label>
+          {_num_input("rl_count", rl_count, "留空=继承")}
+        </div>
+        <div>
+          <label>窗口小时（1~168，留空=继承）</label>
+          {_num_input("rl_window_hours", rl_window, "留空=继承")}
+        </div>
+      </div>
+
+      <h4 style="margin:12px 0 8px">重复检测</h4>
+      <div class="grid">
+        <div>
+          <label>启用</label>
+          {_tri_bool_select(name="dc_enabled", value=dc_enabled)}
+        </div>
+        <div>
+          <label>检测窗口天数（1~3650，留空=继承）</label>
+          {_num_input("dc_window_days", dc_window, "留空=继承")}
+        </div>
+        <div>
+          <label>相似度阈值（0~1，留空=继承）</label>
+          {_num_input("dc_similarity_threshold", dc_threshold, "留空=继承")}
+        </div>
+        <div>
+          <label>URL 检测</label>
+          {_tri_bool_select(name="dc_check_urls", value=dc_urls)}
+        </div>
+        <div>
+          <label>联系方式检测</label>
+          {_tri_bool_select(name="dc_check_contacts", value=dc_contacts)}
+        </div>
+        <div>
+          <label>TG 链接/用户名检测</label>
+          {_tri_bool_select(name="dc_check_tg_links", value=dc_tg)}
+        </div>
+        <div>
+          <label>个人签名检测</label>
+          {_tri_bool_select(name="dc_check_user_bio", value=dc_bio)}
+        </div>
+        <div>
+          <label>内容相似度检测</label>
+          {_tri_bool_select(name="dc_check_content_hash", value=dc_hash)}
+        </div>
+        <div>
+          <label>命中后自动拒绝</label>
+          {_tri_bool_select(name="dc_auto_reject", value=dc_auto_reject)}
+        </div>
+        <div>
+          <label>通知用户重复原因</label>
+          {_tri_bool_select(name="dc_notify_user", value=dc_notify_user)}
+        </div>
+      </div>
+
+      <h4 style="margin:12px 0 8px">基础限制</h4>
+      <div class="grid">
+        <div>
+          <label>最小字数（1~4000，留空=继承）</label>
+          {_num_input("tl_min_len", tl_min, "留空=继承")}
+        </div>
+        <div>
+          <label>最大字数（1~4000，留空=继承）</label>
+          {_num_input("tl_max_len", tl_max, "留空=继承")}
+        </div>
+        <div>
+          <label>收集标签</label>
+          {_tri_bool_select(name="tags_enabled", value=tags_enabled)}
+        </div>
+        <div>
+          <label>最大标签数（0~50，留空=继承）</label>
+          {_num_input("tags_max_tags", tags_max, "留空=继承")}
+        </div>
+        <div>
+          <label>允许文件类型（* 或逗号分隔扩展名/MIME，留空=继承）</label>
+          <input type="text" name="file_allowed_types" value="{html.escape(allowed_file_types)}" placeholder="留空=继承" />
+        </div>
+      </div>
+
+      <h4 style="margin:12px 0 8px">上传限制</h4>
+      <div class="grid">
+        <div>
+          <label>最多文档数量（1~50，留空=继承）</label>
+          {_num_input("ul_max_docs", ul_docs, "留空=继承")}
+        </div>
+        <div>
+          <label>最多媒体数量（非媒体模式，0~50，留空=继承）</label>
+          {_num_input("ul_max_media_default", ul_media_default, "留空=继承")}
+        </div>
+        <div>
+          <label>最多媒体数量（媒体模式，1~200，留空=继承）</label>
+          {_num_input("ul_max_media_media_mode", ul_media_media_mode, "留空=继承")}
+        </div>
+        <div>
+          <label>媒体模式必须至少 1 个媒体</label>
+          {_tri_bool_select(name="ul_media_mode_require_one", value=ul_media_req_one)}
+        </div>
+      </div>
+
+      <h4 style="margin:12px 0 8px">其它</h4>
+      <div class="grid">
+        <div>
+          <label>显示投稿人</label>
+          {_tri_bool_select(name="bot_show_submitter", value=bot_show_submitter)}
+        </div>
+        <div>
+          <label>通知所有者</label>
+          {_tri_bool_select(name="bot_notify_owner", value=bot_notify_owner)}
+        </div>
+        <div>
+          <label>启用评分</label>
+          {_tri_bool_select(name="rating_enabled", value=rating_enabled)}
+        </div>
+        <div>
+          <label>允许修改评分</label>
+          {_tri_bool_select(name="rating_allow_update", value=rating_allow_update)}
+        </div>
+      </div>
+    </div>
+    """
+
+
 async def whitelist_users_get(request: web.Request) -> web.Response:
     _require_auth(request)
     base = ADMIN_WEB_PATH.rstrip("/")
@@ -921,10 +1138,17 @@ async def whitelist_users_get(request: web.Request) -> web.Response:
     profiles = submit_policy.list_profiles()
     users = submit_policy.list_users()
 
-    profile_options = "\n".join(
-        f"<option value=\"{html.escape(p.profile_id)}\">{html.escape(p.profile_id)} - {html.escape(p.name)}</option>"
-        for p in profiles
-    )
+    def _profile_options(*, selected: str = "") -> str:
+        sel = str(selected or "").strip()
+        return "\n".join(
+            (
+                f"<option value=\"{html.escape(p.profile_id)}\" "
+                f"{'selected' if p.profile_id == sel else ''}>"
+                f"{html.escape(p.profile_id)} - {html.escape(p.name)}"
+                f"</option>"
+            )
+            for p in profiles
+        )
 
     rows = []
     for u in users:
@@ -932,14 +1156,27 @@ async def whitelist_users_get(request: web.Request) -> web.Response:
             f"""
             <tr>
               <td>{html.escape(str(u.user_id))}</td>
-              <td>{html.escape(u.profile_id)}</td>
-              <td>{html.escape(u.username or '-')}</td>
-              <td>{html.escape(u.note or '-')}</td>
               <td>
                 <form method="post" action="{ADMIN_WEB_PATH}/whitelist" class="row" style="margin:0">
+                  <input type="hidden" name="action" value="user_save" />
+                  <input type="hidden" name="user_id" value="{html.escape(str(u.user_id))}" />
+                  <select name="profile_id" style="min-width:220px">
+                    {_profile_options(selected=u.profile_id)}
+                  </select>
+              </td>
+              <td>
+                  <input type="text" name="username" value="{html.escape(u.username or '')}" placeholder="@someone（可不填）" />
+              </td>
+              <td>
+                  <input type="text" name="note" value="{html.escape(u.note or '')}" placeholder="备注" />
+              </td>
+              <td>
+                  <button type="submit">保存</button>
+                </form>
+                <form method="post" action="{ADMIN_WEB_PATH}/whitelist" class="row" style="margin:0;margin-top:6px">
                   <input type="hidden" name="action" value="user_delete" />
                   <input type="hidden" name="user_id" value="{html.escape(str(u.user_id))}" />
-                  <button type="submit" class="danger">移除</button>
+                  <button type="submit" class="danger" onclick="return confirm('确认移除该白名单用户？');">移除</button>
                 </form>
               </td>
             </tr>
@@ -978,7 +1215,7 @@ async def whitelist_users_get(request: web.Request) -> web.Response:
       <div>
         <label>策略档位（Profile）</label>
         <select name="profile_id">
-          {profile_options}
+          {_profile_options()}
         </select>
       </div>
       <div>
@@ -1074,11 +1311,16 @@ async def whitelist_profiles_get(request: web.Request) -> web.Response:
                     <label>名称</label>
                     <input type="text" name="name" value="{html.escape(p.name)}" />
                   </div>
-                  <div>
-                    <label>overrides_json（只写要覆盖的字段；未写则继承全局默认）</label>
-                    <textarea name="overrides_json">{html.escape(_safe_json_textarea_value(p.overrides))}</textarea>
-                  </div>
                 </div>
+                {_profile_simple_fields(overrides=p.overrides)}
+                <details class="card" style="margin-top:10px">
+                  <summary style="cursor:pointer">高级：直接编辑 overrides_json（可选）</summary>
+                  <div style="height:10px"></div>
+                  <label>overrides_json（只写要覆盖的字段；未写则继承全局默认）</label>
+                  <textarea name="overrides_json" placeholder="留空则使用简单模式生成的覆盖项">{html.escape(_safe_json_textarea_value(p.overrides))}</textarea>
+                  <div style="height:8px"></div>
+                  <label><input type="checkbox" name="use_raw_json" value="1" /> 使用上面的 JSON 覆盖（勾选才会生效）</label>
+                </details>
                 <div class="row" style="margin-top:10px">
                   <button type="submit">保存</button>
                   <button type="submit" name="action" value="profile_delete" class="danger" formaction="{ADMIN_WEB_PATH}/whitelist/profiles" formmethod="post"
@@ -1116,11 +1358,16 @@ async def whitelist_profiles_get(request: web.Request) -> web.Response:
         <label>名称（可选）</label>
         <input type="text" name="name" placeholder="可信投稿人" />
       </div>
-      <div>
-        <label>overrides_json（示例）</label>
-        <textarea name="overrides_json">{html.escape(_safe_json_textarea_value(example))}</textarea>
-      </div>
     </div>
+    {_profile_simple_fields(overrides={})}
+    <details class="card" style="margin-top:10px">
+      <summary style="cursor:pointer">高级：直接编辑 overrides_json（可选）</summary>
+      <div style="height:10px"></div>
+      <label>overrides_json（示例）</label>
+      <textarea name="overrides_json">{html.escape(_safe_json_textarea_value(example))}</textarea>
+      <div style="height:8px"></div>
+      <label><input type="checkbox" name="use_raw_json" value="1" /> 使用上面的 JSON 覆盖（勾选才会生效）</label>
+    </details>
     <div style="height:12px"></div>
     <button type="submit">创建/保存</button>
   </form>
@@ -1139,14 +1386,170 @@ async def whitelist_profiles_post(request: web.Request) -> web.Response:
     form = await request.post()
     action = str(form.get("action") or "").strip().lower()
 
+    def _t(name: str) -> str:
+        return str(form.get(name) or "").strip()
+
+    def _tri_bool(name: str) -> Optional[bool]:
+        v = _t(name)
+        if not v:
+            return None
+        if v == "1":
+            return True
+        if v == "0":
+            return False
+        raise ValueError(f"{name} 值无效")
+
+    def _opt_int(name: str) -> Optional[int]:
+        s = _t(name)
+        if not s:
+            return None
+        try:
+            return int(s)
+        except Exception:
+            raise ValueError(f"{name} 必须是整数")
+
+    def _opt_float(name: str) -> Optional[float]:
+        s = _t(name)
+        if not s:
+            return None
+        try:
+            return float(s)
+        except Exception:
+            raise ValueError(f"{name} 必须是数字")
+
+    def _in_range(name: str, value: int, lo: int, hi: int) -> None:
+        if value < lo or value > hi:
+            raise ValueError(f"{name} 范围应为 {lo}~{hi}")
+
+    def _float_range(name: str, value: float, lo: float, hi: float) -> None:
+        if value < lo or value > hi:
+            raise ValueError(f"{name} 范围应为 {lo}~{hi}")
+
+    def _build_overrides_from_simple_form() -> dict:
+        """
+        从简单模式表单构建 overrides：
+        - 三态 bool：空=继承，不落库
+        - 数字：空=继承，不落库
+        """
+        defaults = submit_policy.build_global_policy()
+        overrides: Dict[str, Dict[str, Any]] = {}
+
+        def put(section: str, key: str, value: Any) -> None:
+            overrides.setdefault(section, {})[key] = value
+
+        # 频率限制
+        rl_enabled = _tri_bool("rl_enabled")
+        if rl_enabled is not None:
+            put("rate_limit", "enabled", rl_enabled)
+        rl_count = _opt_int("rl_count")
+        if rl_count is not None:
+            _in_range("次数上限", rl_count, 1, 20)
+            put("rate_limit", "count", rl_count)
+        rl_window = _opt_int("rl_window_hours")
+        if rl_window is not None:
+            _in_range("窗口小时", rl_window, 1, 168)
+            put("rate_limit", "window_hours", rl_window)
+
+        # 重复检测
+        dc_enabled = _tri_bool("dc_enabled")
+        if dc_enabled is not None:
+            put("duplicate_check", "enabled", dc_enabled)
+        dc_window = _opt_int("dc_window_days")
+        if dc_window is not None:
+            _in_range("检测窗口天数", dc_window, 1, 3650)
+            put("duplicate_check", "window_days", dc_window)
+        dc_threshold = _opt_float("dc_similarity_threshold")
+        if dc_threshold is not None:
+            _float_range("相似度阈值", dc_threshold, 0.0, 1.0)
+            put("duplicate_check", "similarity_threshold", dc_threshold)
+
+        for field, key in (
+            ("dc_check_urls", "check_urls"),
+            ("dc_check_contacts", "check_contacts"),
+            ("dc_check_tg_links", "check_tg_links"),
+            ("dc_check_user_bio", "check_user_bio"),
+            ("dc_check_content_hash", "check_content_hash"),
+            ("dc_auto_reject", "auto_reject"),
+            ("dc_notify_user", "notify_user"),
+        ):
+            v = _tri_bool(field)
+            if v is not None:
+                put("duplicate_check", key, v)
+
+        # 基础限制
+        tl_min = _opt_int("tl_min_len")
+        tl_max = _opt_int("tl_max_len")
+        if tl_min is not None:
+            _in_range("最小字数", tl_min, 1, 4000)
+        if tl_max is not None:
+            _in_range("最大字数", tl_max, 1, 4000)
+        eff_min = tl_min if tl_min is not None else int((defaults.get("text_length") or {}).get("min_len", 10))
+        eff_max = tl_max if tl_max is not None else int((defaults.get("text_length") or {}).get("max_len", 4000))
+        if eff_max < eff_min:
+            raise ValueError("最大字数不能小于最小字数")
+        if tl_min is not None:
+            put("text_length", "min_len", tl_min)
+        if tl_max is not None:
+            put("text_length", "max_len", tl_max)
+
+        tags_enabled = _tri_bool("tags_enabled")
+        if tags_enabled is not None:
+            put("tags", "enabled", tags_enabled)
+        tags_max = _opt_int("tags_max_tags")
+        if tags_max is not None:
+            _in_range("最大标签数", tags_max, 0, 50)
+            put("tags", "max_tags", tags_max)
+
+        aft = _t("file_allowed_types")
+        if aft:
+            runtime_settings.validate_bot_allowed_file_types(aft)
+            put("file_types", "allowed_file_types", aft)
+
+        # 上传限制
+        ul_docs = _opt_int("ul_max_docs")
+        if ul_docs is not None:
+            _in_range("最多文档数量", ul_docs, 1, 50)
+            put("upload_limits", "max_docs", ul_docs)
+        ul_media_default = _opt_int("ul_max_media_default")
+        if ul_media_default is not None:
+            _in_range("最多媒体数量（非媒体模式）", ul_media_default, 0, 50)
+            put("upload_limits", "max_media_default", ul_media_default)
+        ul_media_media_mode = _opt_int("ul_max_media_media_mode")
+        if ul_media_media_mode is not None:
+            _in_range("最多媒体数量（媒体模式）", ul_media_media_mode, 1, 200)
+            put("upload_limits", "max_media_media_mode", ul_media_media_mode)
+        ul_req_one = _tri_bool("ul_media_mode_require_one")
+        if ul_req_one is not None:
+            put("upload_limits", "media_mode_require_one", ul_req_one)
+
+        # 其它
+        v = _tri_bool("bot_show_submitter")
+        if v is not None:
+            put("bot", "show_submitter", v)
+        v = _tri_bool("bot_notify_owner")
+        if v is not None:
+            put("bot", "notify_owner", v)
+        v = _tri_bool("rating_enabled")
+        if v is not None:
+            put("rating", "enabled", v)
+        v = _tri_bool("rating_allow_update")
+        if v is not None:
+            put("rating", "allow_update", v)
+
+        return overrides
+
     try:
         if action == "profile_save":
             profile_id = str(form.get("profile_id") or "").strip()
             name = str(form.get("name") or "").strip()
-            overrides_raw = str(form.get("overrides_json") or "").strip() or "{}"
-            overrides = json.loads(overrides_raw)
-            if not isinstance(overrides, dict):
-                raise ValueError("overrides_json 必须是 JSON object")
+            use_raw_json = _t("use_raw_json") == "1"
+            if use_raw_json:
+                overrides_raw = str(form.get("overrides_json") or "").strip() or "{}"
+                overrides = json.loads(overrides_raw)
+                if not isinstance(overrides, dict):
+                    raise ValueError("overrides_json 必须是 JSON object")
+            else:
+                overrides = _build_overrides_from_simple_form()
             await submit_policy.upsert_profile(profile_id=profile_id, name=name, overrides=overrides)
         elif action == "profile_delete":
             profile_id = str(form.get("profile_id") or "").strip()
