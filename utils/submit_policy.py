@@ -52,6 +52,9 @@ _loaded_at: float = 0.0
 
 
 _ALLOWED_OVERRIDES_SCHEMA: Dict[str, Dict[str, Any]] = {
+    "ai_review": {
+        "mode": str,
+    },
     "rate_limit": {
         "enabled": bool,
         "count": int,
@@ -142,6 +145,11 @@ def _validate_overrides(overrides: JsonObj) -> None:
                 raise ValueError(f"{section}.{key} 类型错误，期望 number，实际 bool")
             if not isinstance(value, expected):
                 raise ValueError(f"{section}.{key} 类型错误，期望 {expected}，实际 {type(value)}")
+            if section == "ai_review" and key == "mode":
+                allowed = {"inherit", "skip", "run_no_auto_reject", "manual_only"}
+                v = str(value or "").strip()
+                if v not in allowed:
+                    raise ValueError(f"ai_review.mode 必须是 {sorted(allowed)} 之一")
 
 
 def build_global_policy() -> JsonObj:
@@ -151,6 +159,9 @@ def build_global_policy() -> JsonObj:
     """
     max_tags = int(runtime_settings.bot_allowed_tags())
     return {
+        "ai_review": {
+            "mode": "inherit",
+        },
         "rate_limit": {
             "enabled": bool(runtime_settings.rate_limit_enabled()),
             "count": int(runtime_settings.rate_limit_count()),

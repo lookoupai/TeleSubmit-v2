@@ -962,6 +962,10 @@ def _profile_simple_fields(*, overrides: dict) -> str:
     rl_count = _ov_num_str(overrides, "rate_limit", "count")
     rl_window = _ov_num_str(overrides, "rate_limit", "window_hours")
 
+    ai_mode = str(_ov_get(overrides, "ai_review", "mode") or "").strip()
+    if ai_mode not in ("skip", "run_no_auto_reject", "manual_only"):
+        ai_mode = ""
+
     # 重复检测
     dc_enabled = _ov_bool(overrides, "duplicate_check", "enabled")
     dc_window = _ov_num_str(overrides, "duplicate_check", "window_days")
@@ -1003,6 +1007,19 @@ def _profile_simple_fields(*, overrides: dict) -> str:
     <div class="card" style="margin-top:10px">
       <h4 style="margin:0 0 10px">简单模式（推荐）</h4>
       <p style="opacity:.75;margin:0 0 10px">留空/继承 = 使用全局默认（见“投稿设置”页面）。</p>
+
+      <h4 style="margin:10px 0 8px">AI 审核</h4>
+      <div class="grid">
+        <div>
+          <label>AI 审核模式</label>
+          <select name="ai_mode">
+            <option value="" {"selected" if ai_mode=="" else ""}>继承（全局默认）</option>
+            <option value="skip" {"selected" if ai_mode=="skip" else ""}>跳过 AI 审核（直接按其他规则）</option>
+            <option value="run_no_auto_reject" {"selected" if ai_mode=="run_no_auto_reject" else ""}>运行 AI，但不自动拒绝（命中则转人工）</option>
+            <option value="manual_only" {"selected" if ai_mode=="manual_only" else ""}>仅人工审核（不运行 AI）</option>
+          </select>
+        </div>
+      </div>
 
       <h4 style="margin:10px 0 8px">频率限制</h4>
       <div class="grid">
@@ -1449,6 +1466,14 @@ async def whitelist_profiles_post(request: web.Request) -> web.Response:
         if rl_window is not None:
             _in_range("窗口小时", rl_window, 1, 168)
             put("rate_limit", "window_hours", rl_window)
+
+        # AI 审核
+        ai_mode = _t("ai_mode")
+        if ai_mode:
+            allowed = {"skip", "run_no_auto_reject", "manual_only"}
+            if ai_mode not in allowed:
+                raise ValueError(f"AI 审核模式必须是 {sorted(allowed)} 之一")
+            put("ai_review", "mode", ai_mode)
 
         # 重复检测
         dc_enabled = _tri_bool("dc_enabled")

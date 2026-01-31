@@ -107,7 +107,50 @@ async def perform_review(
                 return (False, False, dup_result.message)
 
     # 2. AI 审核
-    if runtime_settings.ai_review_enabled() and not skip_ai_review:
+    ai_mode = str(((policy.get("ai_review") or {}).get("mode")) or "inherit").strip() or "inherit"
+    if ai_mode not in ("inherit", "skip", "run_no_auto_reject", "manual_only"):
+        ai_mode = "inherit"
+
+    if ai_mode == "manual_only":
+        await _send_to_manual_review(
+            update,
+            context,
+            ReviewResult(
+                approved=False,
+                confidence=0.0,
+                reason="白名单策略：仅人工审核",
+                category="待人工审核",
+                requires_manual=True,
+            ),
+            user_info,
+            submission_data,
+        )
+        return (False, False, "您的投稿已提交，正在等待管理员审核。")
+
+    if ai_mode == "skip":
+        return (True, True, "")
+
+    allow_auto_reject = ai_mode != "run_no_auto_reject"
+    should_run_ai = runtime_settings.ai_review_enabled() and (not skip_ai_review)
+
+    if ai_mode == "run_no_auto_reject" and not should_run_ai:
+        # AI 不可用/被跳过时，为保证安全性：转人工审核
+        await _send_to_manual_review(
+            update,
+            context,
+            ReviewResult(
+                approved=False,
+                confidence=0.0,
+                reason="白名单策略：AI 不可用，转人工审核",
+                category="待人工审核",
+                requires_manual=True,
+            ),
+            user_info,
+            submission_data,
+        )
+        return (False, False, "您的投稿已提交，正在等待管理员审核。")
+
+    if should_run_ai:
         review_result = await _perform_ai_review(submission_data)
 
         reviewer = get_ai_reviewer()
@@ -117,10 +160,15 @@ async def perform_review(
             logger.info(f"投稿自动通过: user_id={user_id}, category={review_result.category}")
             return (True, True, "✅ 投稿审核通过！")
 
-        elif reviewer.should_auto_reject(review_result):
+        elif reviewer.should_auto_reject(review_result) and allow_auto_reject:
             # 自动拒绝
             await _handle_rejection(update, context, review_result, user_info, submission_data)
             return (False, False, review_result.reason)
+
+        elif reviewer.should_auto_reject(review_result) and not allow_auto_reject:
+            # 白名单策略：不允许自动拒绝，转人工审核（方案1）
+            await _send_to_manual_review(update, context, review_result, user_info, submission_data)
+            return (False, False, "您的投稿已提交，正在等待管理员审核。")
 
         else:
             # 需要人工审核
