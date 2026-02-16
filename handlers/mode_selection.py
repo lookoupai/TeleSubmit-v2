@@ -35,6 +35,8 @@ async def submit(update: Update, context: CallbackContext) -> int:
     logger.info(f"收到 /submit 命令，user_id: {update.effective_user.id}")
     await cleanup_old_data()
     user_id = update.effective_user.id
+    if context.user_data.pop("slot_ad_flow", None) is not None:
+        logger.info(f"开始投稿前清理残留 slot_ad_flow，user_id: {user_id}")
     
     # 获取用户名信息
     user = update.effective_user
@@ -166,6 +168,8 @@ async def start(update: Update, context: CallbackContext) -> int:
     logger.info(f"收到 /start 命令，user_id: {update.effective_user.id}")
     await cleanup_old_data()
     user_id = update.effective_user.id
+    if context.user_data.pop("slot_ad_flow", None) is not None:
+        logger.info(f"处理 /start 前清理残留 slot_ad_flow，user_id: {user_id}")
     
     # 获取用户名信息
     user = update.effective_user

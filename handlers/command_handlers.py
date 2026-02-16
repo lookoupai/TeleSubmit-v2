@@ -58,6 +58,7 @@ async def cancel(update: Update, context: CallbackContext) -> int:
         except Exception:
             pass
     context.user_data.pop("paid_ad", None)
+    context.user_data.pop("slot_ad_flow", None)
     return ConversationHandler.END
 
 
@@ -85,6 +86,7 @@ async def cancel_callback(update: Update, context: CallbackContext) -> int:
         except Exception:
             pass
     context.user_data.pop("paid_ad", None)
+    context.user_data.pop("slot_ad_flow", None)
     return ConversationHandler.END
 
 async def help_command(update: Update, context: CallbackContext):
