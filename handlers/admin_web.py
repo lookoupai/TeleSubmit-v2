@@ -32,6 +32,10 @@ from utils.slot_ad_service import (
     set_slot_sell_enabled,
     terminate_active_order,
     update_slot_ad_order_creative_by_admin,
+    validate_button_style,
+    validate_button_text,
+    validate_button_url,
+    validate_icon_custom_emoji_id,
 )
 from utils.fallback_publish_service import (
     add_pool_item as fallback_add_pool_item,
@@ -308,6 +312,35 @@ async def ads_get(request: web.Request) -> web.Response:
         <label>每单每天允许修改次数（0=不限制）（来源：{_src(runtime_settings.KEY_SLOT_AD_EDIT_LIMIT_PER_ORDER_PER_DAY)}）</label>
         <input type="text" name="slot_ad_edit_limit_per_order_per_day" value="{html.escape(str(runtime_settings.slot_ad_edit_limit_per_order_per_day()))}" />
       </div>
+      <div>
+        <label>允许按钮样式 style（来源：{_src(runtime_settings.KEY_SLOT_AD_ALLOW_STYLE)}）</label>
+        <select name="slot_ad_allow_style">
+          <option value="1" {"selected" if runtime_settings.slot_ad_allow_style() else ""}>允许</option>
+          <option value="0" {"selected" if not runtime_settings.slot_ad_allow_style() else ""}>禁用</option>
+        </select>
+      </div>
+      <div>
+        <label>允许会员自定义表情（来源：{_src(runtime_settings.KEY_SLOT_AD_ALLOW_CUSTOM_EMOJI)}）</label>
+        <select name="slot_ad_allow_custom_emoji">
+          <option value="1" {"selected" if runtime_settings.slot_ad_allow_custom_emoji() else ""}>允许</option>
+          <option value="0" {"selected" if not runtime_settings.slot_ad_allow_custom_emoji() else ""}>禁用</option>
+        </select>
+      </div>
+      <div>
+        <label>会员表情策略（来源：{_src(runtime_settings.KEY_SLOT_AD_CUSTOM_EMOJI_MODE)}）</label>
+        <select name="slot_ad_custom_emoji_mode">
+          <option value="off" {"selected" if runtime_settings.slot_ad_custom_emoji_mode() == "off" else ""}>off（关闭）</option>
+          <option value="auto" {"selected" if runtime_settings.slot_ad_custom_emoji_mode() == "auto" else ""}>auto（失败自动降级）</option>
+          <option value="strict" {"selected" if runtime_settings.slot_ad_custom_emoji_mode() == "strict" else ""}>strict（失败即报错）</option>
+        </select>
+      </div>
+      <div>
+        <label>用户可设置高级字段（style/会员表情）（来源：{_src(runtime_settings.KEY_SLOT_AD_USER_CAN_SET_ADVANCED)}）</label>
+        <select name="slot_ad_user_can_set_advanced">
+          <option value="1" {"selected" if runtime_settings.slot_ad_user_can_set_advanced() else ""}>允许</option>
+          <option value="0" {"selected" if not runtime_settings.slot_ad_user_can_set_advanced() else ""}>禁用</option>
+        </select>
+      </div>
     </div>
     <div style="height:12px"></div>
     <label>租期套餐（天数:金额，逗号分隔）（来源：{_src(runtime_settings.KEY_SLOT_AD_PLANS_RAW)}）</label>
@@ -331,6 +364,10 @@ async def ads_post(request: web.Request) -> web.Response:
 
     paid_enabled = _t("paid_ad_enabled") == "1"
     slot_enabled = _t("slot_ad_enabled") == "1"
+    slot_allow_style = _t("slot_ad_allow_style") == "1"
+    slot_allow_custom_emoji = _t("slot_ad_allow_custom_emoji") == "1"
+    slot_custom_emoji_mode = (_t("slot_ad_custom_emoji_mode") or runtime_settings.slot_ad_custom_emoji_mode()).strip().lower()
+    slot_user_can_set_advanced = _t("slot_ad_user_can_set_advanced") == "1"
 
     paid_packages_raw = _t("paid_ad_packages_raw")
     slot_plans_raw = _t("slot_ad_plans_raw")
@@ -371,6 +408,7 @@ async def ads_post(request: web.Request) -> web.Response:
         else:
             slot_ad_edit_limit_per_order_per_day = int(runtime_settings.slot_ad_edit_limit_per_order_per_day())
         runtime_settings.validate_slot_ad_edit_limit_per_order_per_day(slot_ad_edit_limit_per_order_per_day)
+        runtime_settings.validate_slot_ad_custom_emoji_mode(slot_custom_emoji_mode)
 
         active_rows_count = int(_t("slot_ad_active_rows_count") or "0")
         if active_rows_count < 0:
@@ -408,6 +446,10 @@ async def ads_post(request: web.Request) -> web.Response:
         runtime_settings.KEY_SLOT_AD_URL_MAX_LEN: str(url_max),
         runtime_settings.KEY_SLOT_AD_REMINDER_ADVANCE_DAYS: str(remind_days),
         runtime_settings.KEY_SLOT_AD_EDIT_LIMIT_PER_ORDER_PER_DAY: str(slot_ad_edit_limit_per_order_per_day),
+        runtime_settings.KEY_SLOT_AD_ALLOW_STYLE: "1" if slot_allow_style else "0",
+        runtime_settings.KEY_SLOT_AD_ALLOW_CUSTOM_EMOJI: "1" if slot_allow_custom_emoji else "0",
+        runtime_settings.KEY_SLOT_AD_CUSTOM_EMOJI_MODE: slot_custom_emoji_mode,
+        runtime_settings.KEY_SLOT_AD_USER_CAN_SET_ADVANCED: "1" if slot_user_can_set_advanced else "0",
     })
     raise web.HTTPFound(location=f"{ADMIN_WEB_PATH}/ads")
 
@@ -2128,6 +2170,8 @@ async def slots_get(request: web.Request) -> web.Response:
     active = await get_active_orders()
     reserved = await get_reserved_orders()
     pending = await get_pending_orders()
+    allow_style = runtime_settings.slot_ad_allow_style()
+    allow_custom_emoji = runtime_settings.slot_ad_allow_custom_emoji() and runtime_settings.slot_ad_custom_emoji_mode() != "off"
 
     rows_html = []
     for slot_id in sorted(slot_defaults.keys()):
@@ -2137,11 +2181,51 @@ async def slots_get(request: web.Request) -> web.Response:
         p = pending.get(slot_id)
         sell_enabled = bool(d.get("sell_enabled"))
         default_buttons = d.get("default_buttons") or []
-        default_buttons_lines = "\n".join(
-            f"{str(btn.get('text') or '').strip()} | {str(btn.get('url') or '').strip()}"
-            for btn in default_buttons
-            if isinstance(btn, dict) and str(btn.get("text") or "").strip() and str(btn.get("url") or "").strip()
-        )
+        lines = []
+        for btn in default_buttons:
+            if not isinstance(btn, dict):
+                continue
+            text = str(btn.get("text") or "").strip()
+            url = str(btn.get("url") or "").strip()
+            if not text or not url:
+                continue
+            parts = [text, url]
+            style = str(btn.get("style") or "").strip()
+            icon_custom_emoji_id = str(btn.get("icon_custom_emoji_id") or "").strip()
+            if style:
+                parts.append(style)
+            if icon_custom_emoji_id:
+                parts.append(icon_custom_emoji_id)
+            lines.append(" | ".join(parts))
+        default_buttons_lines = "\n".join(lines)
+        visual_rows = []
+        for idx in range(1, 9):
+            item = default_buttons[idx - 1] if idx - 1 < len(default_buttons) and isinstance(default_buttons[idx - 1], dict) else {}
+            row_text = html.escape(str(item.get("text") or ""))
+            row_url = html.escape(str(item.get("url") or ""))
+            row_style = str(item.get("style") or "").strip()
+            row_icon = html.escape(str(item.get("icon_custom_emoji_id") or ""))
+            style_options = "".join(
+                f"<option value=\"{s}\" {'selected' if row_style == s else ''}>{s}</option>"
+                for s in ("primary", "success", "danger")
+            )
+            visual_rows.append(
+                f"""
+                <tr>
+                  <td style="white-space:nowrap;width:56px">#{idx}</td>
+                  <td><input type="text" name="default_btn_text_{idx}" value="{row_text}" placeholder="按钮文案" /></td>
+                  <td><input type="text" name="default_btn_url_{idx}" value="{row_url}" placeholder="https://example.com" /></td>
+                  <td>
+                    <select name="default_btn_style_{idx}">
+                      <option value="">无</option>
+                      {style_options}
+                    </select>
+                  </td>
+                  <td><input type="text" name="default_btn_icon_{idx}" value="{row_icon}" placeholder="可选" /></td>
+                </tr>
+                """
+            )
+        visual_rows_html = "".join(visual_rows)
 
         active_html = "-"
         terminate_form = ""
@@ -2154,6 +2238,13 @@ async def slots_get(request: web.Request) -> web.Response:
             out_trade_no = html.escape(str(target.get("out_trade_no") or "-"))
             button_text = html.escape(str(target.get("button_text") or ""))
             button_url = html.escape(str(target.get("button_url") or ""))
+            button_style = html.escape(str(target.get("button_style") or ""))
+            icon_custom_emoji_id = html.escape(str(target.get("icon_custom_emoji_id") or ""))
+            advanced_lines = ""
+            if button_style:
+                advanced_lines += f"style: {button_style}<br/>"
+            if icon_custom_emoji_id:
+                advanced_lines += f"emoji_id: {icon_custom_emoji_id}<br/>"
             if a:
                 active_html = (
                     "<div>"
@@ -2162,6 +2253,7 @@ async def slots_get(request: web.Request) -> web.Response:
                     f"buyer: {buyer}<br/>"
                     f"order: {out_trade_no}<br/>"
                     f"button: {button_text}<br/>"
+                    f"{advanced_lines}"
                     f"url: <a href=\"{button_url}\" target=\"_blank\" rel=\"noreferrer\">{button_url}</a>"
                     "</div>"
                 )
@@ -2174,6 +2266,7 @@ async def slots_get(request: web.Request) -> web.Response:
                     f"buyer: {buyer}<br/>"
                     f"order: {out_trade_no}<br/>"
                     f"button: {button_text}<br/>"
+                    f"{advanced_lines}"
                     f"url: <a href=\"{button_url}\" target=\"_blank\" rel=\"noreferrer\">{button_url}</a>"
                     "</div>"
                 )
@@ -2190,10 +2283,15 @@ async def slots_get(request: web.Request) -> web.Response:
                     f"order: {out_trade_no}<br/>"
                     f"trade_id: {trade_id}<br/>"
                     f"button: {button_text}<br/>"
+                    f"{advanced_lines}"
                     f"url: <a href=\"{button_url}\" target=\"_blank\" rel=\"noreferrer\">{button_url}</a>"
                     "</div>"
                 )
             if a or r:
+                style_options = "".join(
+                    f"<option value=\"{s}\" {'selected' if button_style == s else ''}>{s}</option>"
+                    for s in ("primary", "success", "danger")
+                )
                 terminate_form = f"""
                   <form method="post" action="{ADMIN_WEB_PATH}/slots/terminate" style="display:inline">
                     <input type="hidden" name="slot_id" value="{slot_id}" />
@@ -2218,6 +2316,17 @@ async def slots_get(request: web.Request) -> web.Response:
                     </div>
                     <div style="height:6px"></div>
                     <div class="row">
+                      <div style="min-width:220px;flex:1">
+                        <label>按钮样式 style（可选）</label>
+                        {"<select name='button_style'><option value=''>无</option>" + style_options + "</select>" if allow_style else "<input type='hidden' name='button_style' value='' /><input type='text' value='已禁用（在广告参数页开启）' disabled />"}
+                      </div>
+                      <div style="min-width:320px;flex:2">
+                        <label>会员表情 ID（可选）</label>
+                        {"<input type='text' name='icon_custom_emoji_id' value='" + icon_custom_emoji_id + "' placeholder='例如 5390937358942362430' />" if allow_custom_emoji else "<input type='hidden' name='icon_custom_emoji_id' value='' /><input type='text' value='已禁用（在广告参数页开启）' disabled />"}
+                      </div>
+                    </div>
+                    <div style="height:6px"></div>
+                    <div class="row">
                       <label style="display:flex;gap:8px;align-items:center;margin:0">
                         <input type="checkbox" name="force" value="1" />
                         强制（忽略“每单每天修改次数限制”）
@@ -2235,7 +2344,31 @@ async def slots_get(request: web.Request) -> web.Response:
             <td style="min-width:280px">
               <form method="post" action="{ADMIN_WEB_PATH}/slots/save">
                 <input type="hidden" name="slot_id" value="{slot_id}" />
-                <label>默认按钮列表（每行：文案 | https://链接；最多 7 个，若开启售卖会额外追加“购买”）</label>
+                <label>默认按钮（可视化编辑，推荐）</label>
+                <p style="margin:6px 0 8px;opacity:.8">
+                  每行代表 1 个按钮，留空会忽略该行。样式仅支持 <code>primary/success/danger</code>，会员表情填写 <code>icon_custom_emoji_id</code>（数字字符串）。
+                </p>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>行</th>
+                      <th>文案</th>
+                      <th>链接</th>
+                      <th>样式</th>
+                      <th>会员表情ID</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visual_rows_html}
+                  </tbody>
+                </table>
+                <div style="height:10px"></div>
+                <label>文本模式（兼容旧格式）</label>
+                <p style="margin:6px 0 8px;opacity:.8">
+                  语法：每行 <code>文案 | https://链接 [| style] [| emoji_id]</code>。<br/>
+                  示例：<code>客服 | https://b.com | success | 5390937358942362430</code>。<br/>
+                  若“可视化编辑”有填写内容，保存时优先使用可视化数据。
+                </p>
                 <textarea name="default_buttons" rows="4" style="width:100%">{html.escape(default_buttons_lines)}</textarea>
                 <div style="height:6px"></div>
                 <label>售卖开关</label>
@@ -2291,7 +2424,37 @@ async def slots_save(request: web.Request) -> web.Response:
 
     raw_buttons = "" if clear else str(form.get("default_buttons") or "")
     try:
-        default_buttons = [] if clear else parse_default_buttons_lines(raw_buttons)
+        if clear:
+            default_buttons = []
+        else:
+            visual_buttons = []
+            visual_has_input = False
+            for idx in range(1, 9):
+                t = str(form.get(f"default_btn_text_{idx}") or "").strip()
+                u = str(form.get(f"default_btn_url_{idx}") or "").strip()
+                s = str(form.get(f"default_btn_style_{idx}") or "").strip()
+                icon = str(form.get(f"default_btn_icon_{idx}") or "").strip()
+                if not (t or u or s or icon):
+                    continue
+                visual_has_input = True
+                if not t or not u:
+                    raise ValueError(f"可视化编辑第 {idx} 行需要同时填写“文案”和“链接”，或整行留空")
+                item = {
+                    "text": validate_button_text(t),
+                    "url": validate_button_url(u),
+                }
+                style = validate_button_style(s)
+                icon_custom_emoji_id = validate_icon_custom_emoji_id(icon)
+                if style:
+                    item["style"] = style
+                if icon_custom_emoji_id:
+                    item["icon_custom_emoji_id"] = icon_custom_emoji_id
+                visual_buttons.append(item)
+
+            if visual_has_input:
+                default_buttons = visual_buttons
+            else:
+                default_buttons = parse_default_buttons_lines(raw_buttons)
     except Exception as e:
         return _html_page(
             title="保存失败",
@@ -2308,6 +2471,8 @@ async def slots_order_edit(request: web.Request) -> web.Response:
     out_trade_no = str(form.get("out_trade_no") or "").strip()
     button_text = str(form.get("button_text") or "").strip()
     button_url = str(form.get("button_url") or "").strip()
+    button_style = str(form.get("button_style") or "").strip()
+    icon_custom_emoji_id = str(form.get("icon_custom_emoji_id") or "").strip()
     force = str(form.get("force") or "").strip() == "1"
     note = str(form.get("note") or "").strip()
 
@@ -2319,6 +2484,8 @@ async def slots_order_edit(request: web.Request) -> web.Response:
             out_trade_no=out_trade_no,
             button_text=button_text,
             button_url=button_url,
+            button_style=(button_style or None),
+            icon_custom_emoji_id=(icon_custom_emoji_id or None),
             force=bool(force),
             note=(note or "admin_web_edit"),
         )

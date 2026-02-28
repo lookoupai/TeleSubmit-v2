@@ -499,11 +499,24 @@ async def init_db():
                     user_id INTEGER NOT NULL,
                     button_text TEXT NOT NULL,
                     button_url TEXT NOT NULL,
+                    button_style TEXT,
+                    icon_custom_emoji_id TEXT,
                     ai_review_result TEXT,
                     ai_review_passed INTEGER,
                     created_at REAL NOT NULL
                 )
             """)
+            # 兼容迁移：为旧库补齐高级按钮字段（样式 / 会员自定义表情）
+            try:
+                await conn.execute("ALTER TABLE slot_ad_creatives ADD COLUMN button_style TEXT")
+                logger.info("已添加 button_style 字段到 slot_ad_creatives 表")
+            except Exception:
+                pass
+            try:
+                await conn.execute("ALTER TABLE slot_ad_creatives ADD COLUMN icon_custom_emoji_id TEXT")
+                logger.info("已添加 icon_custom_emoji_id 字段到 slot_ad_creatives 表")
+            except Exception:
+                pass
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_slot_ad_creatives_user_id ON slot_ad_creatives(user_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_slot_ad_creatives_created_at ON slot_ad_creatives(created_at)")
 

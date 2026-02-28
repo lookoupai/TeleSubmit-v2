@@ -459,6 +459,17 @@ SLOT_AD_RENEW_PROTECT_DAYS = get_config_int('SLOT_AD', 'RENEW_PROTECT_DAYS', 7)
 SLOT_AD_BUTTON_TEXT_MAX_LEN = get_config_int('SLOT_AD', 'BUTTON_TEXT_MAX_LEN', 20)
 SLOT_AD_URL_MAX_LEN = get_config_int('SLOT_AD', 'URL_MAX_LEN', 512)
 SLOT_AD_REMINDER_ADVANCE_DAYS = get_config_int('SLOT_AD', 'REMINDER_ADVANCE_DAYS', 1)
+SLOT_AD_ALLOW_STYLE = get_config_bool('SLOT_AD', 'ALLOW_STYLE', True)
+SLOT_AD_ALLOW_CUSTOM_EMOJI = get_config_bool('SLOT_AD', 'ALLOW_CUSTOM_EMOJI', False)
+_slot_ad_custom_emoji_mode_raw = (
+    get_env_or_config('SLOT_AD_CUSTOM_EMOJI_MODE', 'SLOT_AD', 'CUSTOM_EMOJI_MODE', fallback='auto') or 'auto'
+).strip().lower()
+if _slot_ad_custom_emoji_mode_raw in ('off', 'auto', 'strict'):
+    SLOT_AD_CUSTOM_EMOJI_MODE = _slot_ad_custom_emoji_mode_raw
+else:
+    SLOT_AD_CUSTOM_EMOJI_MODE = 'auto'
+    logger.warning(f"SLOT_AD.CUSTOM_EMOJI_MODE 配置无效，将使用默认值 auto: {_slot_ad_custom_emoji_mode_raw}")
+SLOT_AD_USER_CAN_SET_ADVANCED = get_config_bool('SLOT_AD', 'USER_CAN_SET_ADVANCED', True)
 
 SLOT_AD_PLANS_RAW = (get_env_or_config('SLOT_AD_PLANS', 'SLOT_AD', 'PLANS', fallback='31:10,62:18') or '').strip()
 

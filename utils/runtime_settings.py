@@ -45,6 +45,10 @@ KEY_SLOT_AD_BUTTON_TEXT_MAX_LEN = "slot_ad.button_text_max_len"
 KEY_SLOT_AD_URL_MAX_LEN = "slot_ad.url_max_len"
 KEY_SLOT_AD_REMINDER_ADVANCE_DAYS = "slot_ad.reminder_advance_days"
 KEY_SLOT_AD_EDIT_LIMIT_PER_ORDER_PER_DAY = "slot_ad.edit_limit_per_order_per_day"
+KEY_SLOT_AD_ALLOW_STYLE = "slot_ad.allow_style"
+KEY_SLOT_AD_ALLOW_CUSTOM_EMOJI = "slot_ad.allow_custom_emoji"
+KEY_SLOT_AD_CUSTOM_EMOJI_MODE = "slot_ad.custom_emoji_mode"
+KEY_SLOT_AD_USER_CAN_SET_ADVANCED = "slot_ad.user_can_set_advanced"
 
 KEY_AI_REVIEW_ENABLED = "ai_review.enabled"
 KEY_AI_REVIEW_MODEL = "ai_review.model"
@@ -346,6 +350,24 @@ def slot_ad_edit_limit_per_order_per_day() -> int:
     except Exception:
         return 1
     return max(0, min(20, int(v)))
+
+
+def slot_ad_allow_style() -> bool:
+    return get_bool(KEY_SLOT_AD_ALLOW_STYLE, bool(getattr(static, "SLOT_AD_ALLOW_STYLE", True)))
+
+
+def slot_ad_allow_custom_emoji() -> bool:
+    return get_bool(KEY_SLOT_AD_ALLOW_CUSTOM_EMOJI, bool(getattr(static, "SLOT_AD_ALLOW_CUSTOM_EMOJI", False)))
+
+
+def slot_ad_custom_emoji_mode() -> str:
+    fallback = str(getattr(static, "SLOT_AD_CUSTOM_EMOJI_MODE", "auto")).strip().lower() or "auto"
+    raw = get_str(KEY_SLOT_AD_CUSTOM_EMOJI_MODE, fallback).strip().lower()
+    return raw if raw in ("off", "auto", "strict") else "auto"
+
+
+def slot_ad_user_can_set_advanced() -> bool:
+    return get_bool(KEY_SLOT_AD_USER_CAN_SET_ADVANCED, bool(getattr(static, "SLOT_AD_USER_CAN_SET_ADVANCED", True)))
 
 
 def ai_review_enabled() -> bool:
@@ -671,6 +693,12 @@ def validate_slot_ad_edit_limit_per_order_per_day(limit: int) -> None:
         raise ValueError("SLOT_AD.EDIT_LIMIT_PER_ORDER_PER_DAY 不能为负数")
     if v > 20:
         raise ValueError("SLOT_AD.EDIT_LIMIT_PER_ORDER_PER_DAY 不能大于 20")
+
+
+def validate_slot_ad_custom_emoji_mode(mode: str) -> None:
+    m = str(mode or "").strip().lower()
+    if m not in ("off", "auto", "strict"):
+        raise ValueError("SLOT_AD.CUSTOM_EMOJI_MODE 仅支持 off/auto/strict")
 
 
 def validate_duplicate_check_window_days(days: int) -> None:

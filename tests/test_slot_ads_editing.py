@@ -65,6 +65,8 @@ async def test_slot_ads_edit_limit_and_admin_force(temp_dir):
             user_id INTEGER NOT NULL,
             button_text TEXT NOT NULL,
             button_url TEXT NOT NULL,
+            button_style TEXT,
+            icon_custom_emoji_id TEXT,
             ai_review_result TEXT,
             ai_review_passed INTEGER,
             created_at REAL NOT NULL
@@ -225,4 +227,3 @@ async def test_slot_ads_edit_limit_and_admin_force(temp_dir):
         runtime_settings._snapshot = orig_snapshot  # type: ignore[attr-defined]
         slot_ad_service.get_db = orig_get_db  # type: ignore[assignment]
         conn.close()
-

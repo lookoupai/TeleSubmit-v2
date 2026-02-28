@@ -189,6 +189,34 @@ PLANS = 31:10,62:18
 # 币种展示（默认复用 PAID_AD.CURRENCY）
 # CURRENCY = USDT
 
+# 按钮文案最大长度
+# BUTTON_TEXT_MAX_LEN = 20
+
+# 按钮链接最大长度
+# URL_MAX_LEN = 512
+
+# 到期提醒提前天数
+# REMINDER_ADVANCE_DAYS = 1
+
+# 续期保护窗（天）
+# RENEW_PROTECT_DAYS = 7
+
+# 高级按钮能力开关（Bot API 9.4）
+# 是否允许按钮样式 style（primary/success/danger）
+# ALLOW_STYLE = true
+
+# 是否允许会员自定义表情 icon_custom_emoji_id
+# ALLOW_CUSTOM_EMOJI = false
+
+# 会员自定义表情策略：
+# off    = 完全关闭（忽略 icon_custom_emoji_id）
+# auto   = 发送失败时自动去掉 icon_custom_emoji_id 重试
+# strict = 发送失败直接报错
+# CUSTOM_EMOJI_MODE = auto
+
+# 用户在购买 /slot_edit 流程里是否可设置高级字段（style / emoji）
+# USER_CAN_SET_ADVANCED = true
+
 [DUPLICATE_CHECK]
 # 重复投稿检测配置
 

@@ -19,7 +19,14 @@ from telegram.constants import ParseMode
 
 from config.settings import CHANNEL_ID
 from database.db_manager import get_db
-from utils.slot_ad_service import build_channel_keyboard, get_active_orders, get_slot_defaults
+from utils import runtime_settings
+from utils.slot_ad_service import (
+    build_channel_keyboard,
+    get_active_orders,
+    get_slot_defaults,
+    markup_has_custom_emoji,
+    strip_custom_emoji_from_markup,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -218,8 +225,31 @@ async def scheduled_publish_tick(context) -> None:
                 reply_markup=keyboard,
             )
     except Exception as e:
-        logger.error(f"定时消息发送失败: {e}", exc_info=True)
-        return
+        can_auto_downgrade = runtime_settings.slot_ad_custom_emoji_mode() == "auto" and markup_has_custom_emoji(keyboard)
+        if not can_auto_downgrade:
+            logger.error(f"定时消息发送失败: {e}", exc_info=True)
+            return
+        logger.warning(f"定时消息发送失败，custom emoji 自动降级重试: {e}")
+        fallback_keyboard = strip_custom_emoji_from_markup(keyboard)
+        try:
+            try:
+                sent = await context.bot.send_message(
+                    chat_id=CHANNEL_ID,
+                    text=text,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                    reply_markup=fallback_keyboard,
+                )
+            except Exception:
+                sent = await context.bot.send_message(
+                    chat_id=CHANNEL_ID,
+                    text=text,
+                    disable_web_page_preview=True,
+                    reply_markup=fallback_keyboard,
+                )
+        except Exception as e2:
+            logger.error(f"定时消息发送失败（已尝试去除 custom emoji）: {e2}", exc_info=True)
+            return
 
     prev_chat_id = cfg.last_message_chat_id
     prev_message_id = cfg.last_message_id

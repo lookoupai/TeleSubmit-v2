@@ -38,6 +38,7 @@ from utils.upay_pro_client import create_order as upay_create_order
 from utils.upay_pro_client import normalize_amount
 
 logger = logging.getLogger(__name__)
+ALLOWED_BUTTON_STYLES = ("primary", "success", "danger")
 
 
 @dataclass(frozen=True)
@@ -144,25 +145,77 @@ def validate_button_url(url: str) -> str:
     return u
 
 
-def parse_default_buttons_lines(raw: str) -> List[Dict[str, str]]:
+def validate_button_style(style: Optional[str]) -> Optional[str]:
+    s = (style or "").strip().lower()
+    if not s or s in ("none", "off", "无"):
+        return None
+    if s not in ALLOWED_BUTTON_STYLES:
+        raise ValueError("按钮样式仅支持 primary/success/danger")
+    return s
+
+
+def validate_icon_custom_emoji_id(icon_custom_emoji_id: Optional[str]) -> Optional[str]:
+    v = (icon_custom_emoji_id or "").strip()
+    if not v or v.lower() in ("none", "off", "无"):
+        return None
+    if len(v) > 64:
+        raise ValueError("会员表情 ID 过长（最多 64 字符）")
+    if not v.isdigit():
+        raise ValueError("会员表情 ID 必须是数字字符串")
+    return v
+
+
+def _normalize_advanced_fields_for_runtime(
+    *,
+    style: Optional[str],
+    icon_custom_emoji_id: Optional[str],
+) -> Tuple[Optional[str], Optional[str]]:
+    cleaned_style = validate_button_style(style)
+    cleaned_icon = validate_icon_custom_emoji_id(icon_custom_emoji_id)
+
+    if not runtime_settings.slot_ad_allow_style():
+        cleaned_style = None
+    if not runtime_settings.slot_ad_allow_custom_emoji():
+        cleaned_icon = None
+    if runtime_settings.slot_ad_custom_emoji_mode() == "off":
+        cleaned_icon = None
+
+    return cleaned_style, cleaned_icon
+
+
+def parse_default_buttons_lines(raw: str) -> List[Dict[str, Any]]:
     """
     解析默认按钮列表（用于后台输入）：
-    - 每行一条：<text> | <https://url>
+    - 每行一条：<text> | <https://url> [| style] [| icon_custom_emoji_id]
     - 空行忽略
     """
-    out: List[Dict[str, str]] = []
+    out: List[Dict[str, Any]] = []
     lines = [ln.strip() for ln in (raw or "").splitlines()]
     for ln in lines:
         if not ln:
             continue
         if "|" not in ln:
-            raise ValueError("默认按钮列表格式错误：每行需使用 “文案 | https://链接”")
-        text, url = [x.strip() for x in ln.split("|", 1)]
-        out.append({"text": validate_button_text(text), "url": validate_button_url(url)})
+            raise ValueError("默认按钮列表格式错误：每行需使用 “文案 | https://链接 [| style] [| emoji_id]”")
+        parts = [x.strip() for x in ln.split("|")]
+        if len(parts) < 2 or len(parts) > 4:
+            raise ValueError("默认按钮列表格式错误：每行仅支持 2~4 段（文案 | 链接 | 样式 | 会员表情ID）")
+        text = parts[0]
+        url = parts[1]
+        style = validate_button_style(parts[2]) if len(parts) >= 3 else None
+        icon_custom_emoji_id = validate_icon_custom_emoji_id(parts[3]) if len(parts) >= 4 else None
+        item: Dict[str, Any] = {
+            "text": validate_button_text(text),
+            "url": validate_button_url(url),
+        }
+        if style:
+            item["style"] = style
+        if icon_custom_emoji_id:
+            item["icon_custom_emoji_id"] = icon_custom_emoji_id
+        out.append(item)
     return out
 
 
-def _safe_parse_default_buttons_json(raw: Optional[str]) -> List[Dict[str, str]]:
+def _safe_parse_default_buttons_json(raw: Optional[str]) -> List[Dict[str, Any]]:
     if not raw:
         return []
     try:
@@ -172,7 +225,7 @@ def _safe_parse_default_buttons_json(raw: Optional[str]) -> List[Dict[str, str]]
         return []
     if not isinstance(data, list):
         return []
-    out: List[Dict[str, str]] = []
+    out: List[Dict[str, Any]] = []
     for item in data:
         if not isinstance(item, dict):
             continue
@@ -180,8 +233,23 @@ def _safe_parse_default_buttons_json(raw: Optional[str]) -> List[Dict[str, str]]
         url = (item.get("url") or "").strip()
         if not text or not url:
             continue
+        style = None
+        icon_custom_emoji_id = None
+        try:
+            style = validate_button_style(item.get("style"))
+        except Exception:
+            style = None
+        try:
+            icon_custom_emoji_id = validate_icon_custom_emoji_id(item.get("icon_custom_emoji_id"))
+        except Exception:
+            icon_custom_emoji_id = None
         # DB 中的脏数据不应导致渲染失败：这里不做严格校验，只做最小约束
-        out.append({"text": str(text), "url": str(url)})
+        entry: Dict[str, Any] = {"text": str(text), "url": str(url)}
+        if style:
+            entry["style"] = style
+        if icon_custom_emoji_id:
+            entry["icon_custom_emoji_id"] = icon_custom_emoji_id
+        out.append(entry)
     return out
 
 
@@ -219,7 +287,7 @@ async def set_slot_default(slot_id: int, default_text: Optional[str], default_ur
         )
 
 
-async def set_slot_default_buttons(slot_id: int, default_buttons: List[Dict[str, str]]) -> None:
+async def set_slot_default_buttons(slot_id: int, default_buttons: List[Dict[str, Any]]) -> None:
     buttons = default_buttons or []
     first = buttons[0] if buttons else None
     default_text = (first.get("text") if isinstance(first, dict) else None) if first else None
@@ -250,7 +318,8 @@ async def _get_active_order_for_slot(slot_id: int, now: float) -> Optional[Dict[
         cursor = await conn.cursor()
         await cursor.execute(
             """
-            SELECT o.*, c.button_text AS button_text, c.button_url AS button_url
+            SELECT o.*, c.button_text AS button_text, c.button_url AS button_url,
+                   c.button_style AS button_style, c.icon_custom_emoji_id AS icon_custom_emoji_id
             FROM slot_ad_orders o
             JOIN slot_ad_creatives c ON c.id = o.creative_id
             WHERE o.slot_id = ?
@@ -278,7 +347,8 @@ async def _get_reserved_order_for_slot(slot_id: int, now: float) -> Optional[Dic
         cursor = await conn.cursor()
         await cursor.execute(
             """
-            SELECT o.*, c.button_text AS button_text, c.button_url AS button_url
+            SELECT o.*, c.button_text AS button_text, c.button_url AS button_url,
+                   c.button_style AS button_style, c.icon_custom_emoji_id AS icon_custom_emoji_id
             FROM slot_ad_orders o
             JOIN slot_ad_creatives c ON c.id = o.creative_id
             WHERE o.slot_id = ?
@@ -300,7 +370,8 @@ async def get_active_orders(now: Optional[float] = None) -> Dict[int, Dict[str, 
         cursor = await conn.cursor()
         await cursor.execute(
             """
-            SELECT o.*, c.button_text AS button_text, c.button_url AS button_url
+            SELECT o.*, c.button_text AS button_text, c.button_url AS button_url,
+                   c.button_style AS button_style, c.icon_custom_emoji_id AS icon_custom_emoji_id
             FROM slot_ad_orders o
             JOIN slot_ad_creatives c ON c.id = o.creative_id
             WHERE o.status = 'active'
@@ -325,7 +396,8 @@ async def get_reserved_orders(now: Optional[float] = None) -> Dict[int, Dict[str
         cursor = await conn.cursor()
         await cursor.execute(
             """
-            SELECT o.*, c.button_text AS button_text, c.button_url AS button_url
+            SELECT o.*, c.button_text AS button_text, c.button_url AS button_url,
+                   c.button_style AS button_style, c.icon_custom_emoji_id AS icon_custom_emoji_id
             FROM slot_ad_orders o
             JOIN slot_ad_creatives c ON c.id = o.creative_id
             WHERE o.status = 'active'
@@ -354,7 +426,8 @@ async def get_pending_orders(now: Optional[float] = None) -> Dict[int, Dict[str,
         cursor = await conn.cursor()
         await cursor.execute(
             """
-            SELECT o.*, c.button_text AS button_text, c.button_url AS button_url
+            SELECT o.*, c.button_text AS button_text, c.button_url AS button_url,
+                   c.button_style AS button_style, c.icon_custom_emoji_id AS icon_custom_emoji_id
             FROM slot_ad_orders o
             JOIN slot_ad_creatives c ON c.id = o.creative_id
             WHERE o.status = 'created'
@@ -378,6 +451,84 @@ def _buy_deeplink(slot_id: int) -> Optional[str]:
     return f"https://t.me/{BOT_USERNAME}?start=buy_slot_{int(slot_id)}"
 
 
+def _build_slot_url_button(
+    *,
+    text: str,
+    url: str,
+    style: Optional[str] = None,
+    icon_custom_emoji_id: Optional[str] = None,
+) -> InlineKeyboardButton:
+    style, icon_custom_emoji_id = _normalize_advanced_fields_for_runtime(
+        style=style,
+        icon_custom_emoji_id=icon_custom_emoji_id,
+    )
+    kwargs: Dict[str, Any] = {"url": str(url)}
+    api_kwargs: Dict[str, Any] = {}
+    if style:
+        api_kwargs["style"] = style
+    if icon_custom_emoji_id:
+        api_kwargs["icon_custom_emoji_id"] = icon_custom_emoji_id
+    if api_kwargs:
+        kwargs["api_kwargs"] = api_kwargs
+    return InlineKeyboardButton(str(text), **kwargs)
+
+
+def markup_has_custom_emoji(markup: Optional[InlineKeyboardMarkup]) -> bool:
+    if not markup or not getattr(markup, "inline_keyboard", None):
+        return False
+    for row in (markup.inline_keyboard or []):
+        for b in (row or []):
+            try:
+                if (b.to_dict() or {}).get("icon_custom_emoji_id"):
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+def strip_custom_emoji_from_markup(markup: InlineKeyboardMarkup) -> InlineKeyboardMarkup:
+    rows: List[List[InlineKeyboardButton]] = []
+    for row in (markup.inline_keyboard or []):
+        new_row: List[InlineKeyboardButton] = []
+        for b in (row or []):
+            try:
+                data = b.to_dict() or {}
+            except Exception:
+                new_row.append(b)
+                continue
+
+            text = str(data.get("text") or "")
+            has_custom = bool(data.get("icon_custom_emoji_id"))
+            style = data.get("style")
+
+            if not has_custom:
+                new_row.append(b)
+                continue
+
+            if data.get("url"):
+                new_row.append(
+                    _build_slot_url_button(
+                        text=text,
+                        url=str(data.get("url")),
+                        style=style,
+                        icon_custom_emoji_id=None,
+                    )
+                )
+                continue
+
+            if data.get("callback_data") is not None:
+                kwargs: Dict[str, Any] = {"callback_data": data.get("callback_data")}
+                if style:
+                    kwargs["api_kwargs"] = {"style": str(style)}
+                new_row.append(InlineKeyboardButton(text, **kwargs))
+                continue
+
+            new_row.append(b)
+        if new_row:
+            rows.append(new_row)
+    return InlineKeyboardMarkup(rows)
+
+
 def build_channel_keyboard(
     *,
     slot_defaults: Dict[int, Dict[str, Any]],
@@ -390,7 +541,17 @@ def build_channel_keyboard(
             break
         active = active_orders.get(int(slot_id))
         if active:
-            rows.append([InlineKeyboardButton(str(active["button_text"]), url=str(active["button_url"]))])
+            try:
+                rows.append([
+                    _build_slot_url_button(
+                        text=str(active["button_text"]),
+                        url=str(active["button_url"]),
+                        style=(active.get("button_style") or None),
+                        icon_custom_emoji_id=(active.get("icon_custom_emoji_id") or None),
+                    )
+                ])
+            except Exception:
+                rows.append([InlineKeyboardButton(str(active["button_text"]), url=str(active["button_url"]))])
             continue
 
         slot = slot_defaults[int(slot_id)]
@@ -409,11 +570,18 @@ def build_channel_keyboard(
                     text = str(btn.get("text") or "").strip()
                     url = str(btn.get("url") or "").strip()
                     if text and url:
-                        line.append(InlineKeyboardButton(text, url=url))
+                        line.append(
+                            _build_slot_url_button(
+                                text=text,
+                                url=url,
+                                style=(btn.get("style") or None),
+                                icon_custom_emoji_id=(btn.get("icon_custom_emoji_id") or None),
+                            )
+                        )
                 except Exception:
                     continue
         elif default_text and default_url:
-            line.append(InlineKeyboardButton(str(default_text), url=str(default_url)))
+            line.append(_build_slot_url_button(text=str(default_text), url=str(default_url)))
         if sell_enabled:
             buy_label = "购买（独享此行）"
             if buy_url:
@@ -427,8 +595,20 @@ def build_channel_keyboard(
     return InlineKeyboardMarkup(rows)
 
 
-async def create_creative(*, user_id: int, button_text: str, button_url: str, ai_review: Optional[Dict[str, Any]] = None) -> int:
+async def create_creative(
+    *,
+    user_id: int,
+    button_text: str,
+    button_url: str,
+    button_style: Optional[str] = None,
+    icon_custom_emoji_id: Optional[str] = None,
+    ai_review: Optional[Dict[str, Any]] = None,
+) -> int:
     now = time.time()
+    style, icon_custom_emoji_id = _normalize_advanced_fields_for_runtime(
+        style=button_style,
+        icon_custom_emoji_id=icon_custom_emoji_id,
+    )
     ai_review_json = json.dumps(ai_review, ensure_ascii=False) if ai_review else None
     ai_passed = None
     if ai_review and "passed" in ai_review:
@@ -438,10 +618,13 @@ async def create_creative(*, user_id: int, button_text: str, button_url: str, ai
         cursor = await conn.cursor()
         await cursor.execute(
             """
-            INSERT INTO slot_ad_creatives(user_id, button_text, button_url, ai_review_result, ai_review_passed, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO slot_ad_creatives(
+                user_id, button_text, button_url, button_style, icon_custom_emoji_id,
+                ai_review_result, ai_review_passed, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (int(user_id), button_text, button_url, ai_review_json, ai_passed, now),
+            (int(user_id), button_text, button_url, style, icon_custom_emoji_id, ai_review_json, ai_passed, now),
         )
         return int(cursor.lastrowid)
 
@@ -692,7 +875,8 @@ async def get_slot_order_for_user_notice(out_trade_no: str) -> Optional[Dict[str
         await cursor.execute(
             """
             SELECT o.out_trade_no, o.slot_id, o.buyer_user_id, o.status, o.start_at, o.end_at, o.paid_at,
-                   c.button_text AS button_text, c.button_url AS button_url
+                   c.button_text AS button_text, c.button_url AS button_url,
+                   c.button_style AS button_style, c.icon_custom_emoji_id AS icon_custom_emoji_id
             FROM slot_ad_orders o
             JOIN slot_ad_creatives c ON c.id = o.creative_id
             WHERE o.out_trade_no = ?
@@ -719,7 +903,8 @@ async def get_slot_order_for_edit(out_trade_no: str) -> Optional[Dict[str, Any]]
         await cursor.execute(
             """
             SELECT o.out_trade_no, o.slot_id, o.buyer_user_id, o.status, o.start_at, o.end_at, o.creative_id,
-                   c.button_text AS button_text, c.button_url AS button_url
+                   c.button_text AS button_text, c.button_url AS button_url,
+                   c.button_style AS button_style, c.icon_custom_emoji_id AS icon_custom_emoji_id
             FROM slot_ad_orders o
             JOIN slot_ad_creatives c ON c.id = o.creative_id
             WHERE o.out_trade_no = ?
@@ -789,19 +974,37 @@ async def _create_creative_in_tx(
     user_id: int,
     button_text: str,
     button_url: str,
+    button_style: Optional[str],
+    icon_custom_emoji_id: Optional[str],
     ai_review: Optional[Dict[str, Any]],
     now: float,
 ) -> int:
+    style, icon_custom_emoji_id = _normalize_advanced_fields_for_runtime(
+        style=button_style,
+        icon_custom_emoji_id=icon_custom_emoji_id,
+    )
     ai_review_json = json.dumps(ai_review, ensure_ascii=False) if ai_review else None
     ai_passed = None
     if ai_review and "passed" in ai_review:
         ai_passed = 1 if bool(ai_review.get("passed")) else 0
     await cursor.execute(
         """
-        INSERT INTO slot_ad_creatives(user_id, button_text, button_url, ai_review_result, ai_review_passed, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO slot_ad_creatives(
+            user_id, button_text, button_url, button_style, icon_custom_emoji_id,
+            ai_review_result, ai_review_passed, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (int(user_id), str(button_text), str(button_url), ai_review_json, ai_passed, float(now)),
+        (
+            int(user_id),
+            str(button_text),
+            str(button_url),
+            style,
+            icon_custom_emoji_id,
+            ai_review_json,
+            ai_passed,
+            float(now),
+        ),
     )
     return int(cursor.lastrowid)
 
@@ -845,6 +1048,8 @@ async def update_slot_ad_order_creative_by_user(
     user_id: int,
     button_text: str,
     button_url: str,
+    button_style: Optional[str] = None,
+    icon_custom_emoji_id: Optional[str] = None,
     now: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
@@ -855,6 +1060,10 @@ async def update_slot_ad_order_creative_by_user(
     t = float(now if now is not None else time.time())
     bt = validate_button_text(button_text)
     bu = validate_button_url(button_url)
+    style, icon_custom_emoji_id = _normalize_advanced_fields_for_runtime(
+        style=button_style,
+        icon_custom_emoji_id=icon_custom_emoji_id,
+    )
 
     from utils.ad_risk_reviewer import review_ad_risk
 
@@ -899,6 +1108,8 @@ async def update_slot_ad_order_creative_by_user(
             user_id=int(user_id),
             button_text=bt,
             button_url=bu,
+            button_style=style,
+            icon_custom_emoji_id=icon_custom_emoji_id,
             ai_review=review.to_dict(),
             now=t,
         )
@@ -927,6 +1138,8 @@ async def update_slot_ad_order_creative_by_admin(
     out_trade_no: str,
     button_text: str,
     button_url: str,
+    button_style: Optional[str] = None,
+    icon_custom_emoji_id: Optional[str] = None,
     force: bool = False,
     note: str = "admin_web_edit",
     now: Optional[float] = None,
@@ -938,6 +1151,10 @@ async def update_slot_ad_order_creative_by_admin(
     t = float(now if now is not None else time.time())
     bt = validate_button_text(button_text)
     bu = validate_button_url(button_url)
+    style, icon_custom_emoji_id = _normalize_advanced_fields_for_runtime(
+        style=button_style,
+        icon_custom_emoji_id=icon_custom_emoji_id,
+    )
 
     from utils.ad_risk_reviewer import review_ad_risk
 
@@ -977,6 +1194,8 @@ async def update_slot_ad_order_creative_by_admin(
             user_id=buyer_user_id,
             button_text=bt,
             button_url=bu,
+            button_style=style,
+            icon_custom_emoji_id=icon_custom_emoji_id,
             ai_review=review.to_dict(),
             now=t,
         )
@@ -1014,11 +1233,22 @@ async def refresh_last_scheduled_message_keyboard(*, bot, now: Optional[float] =
     slot_defaults = await get_slot_defaults()
     active = await get_active_orders(now=t)
     keyboard = build_channel_keyboard(slot_defaults=slot_defaults, active_orders=active)
-    await bot.edit_message_reply_markup(
-        chat_id=int(sched.last_message_chat_id),
-        message_id=int(sched.last_message_id),
-        reply_markup=keyboard,
-    )
+    try:
+        await bot.edit_message_reply_markup(
+            chat_id=int(sched.last_message_chat_id),
+            message_id=int(sched.last_message_id),
+            reply_markup=keyboard,
+        )
+    except Exception as e:
+        if runtime_settings.slot_ad_custom_emoji_mode() == "auto" and markup_has_custom_emoji(keyboard):
+            logger.warning(f"刷新键盘时 custom emoji 可能不可用，自动降级重试: {e}")
+            await bot.edit_message_reply_markup(
+                chat_id=int(sched.last_message_chat_id),
+                message_id=int(sched.last_message_id),
+                reply_markup=strip_custom_emoji_from_markup(keyboard),
+            )
+        else:
+            raise
     return True
 
 

@@ -28,6 +28,8 @@ async def test_slot_ads_reserved_order_blocks_resell(temp_dir):
             user_id INTEGER NOT NULL,
             button_text TEXT NOT NULL,
             button_url TEXT NOT NULL,
+            button_style TEXT,
+            icon_custom_emoji_id TEXT,
             ai_review_result TEXT,
             ai_review_passed INTEGER,
             created_at REAL NOT NULL

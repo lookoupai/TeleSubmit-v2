@@ -48,8 +48,10 @@ from utils.slot_ad_service import (
     terminate_active_order,
     update_slot_ad_order_creative_by_user,
     user_can_edit_order_today,
+    validate_button_style,
     validate_button_text,
     validate_button_url,
+    validate_icon_custom_emoji_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -120,13 +122,17 @@ async def _start_order_edit_flow(
 
     current_text = str(order.get("button_text") or "").strip()
     current_url = str(order.get("button_url") or "").strip()
+    current_style = str(order.get("button_style") or "").strip()
+    current_icon = str(order.get("icon_custom_emoji_id") or "").strip()
     tip = (
         "🛠️ 修改按钮广告内容\n\n"
         f"订单号：{_as_html_code(out_trade_no)}\n"
         f"当前按钮文案：{_as_html_code(current_text)}\n"
         f"当前按钮链接：{_as_html_code(current_url)}\n\n"
-        f"今日剩余次数：{_as_html_code(remaining_text)} / {_as_html_code(limit_text)}\n\n"
-        "请发送新的按钮文案："
+        + (f"当前样式：{_as_html_code(current_style)}\n" if current_style else "")
+        + (f"当前会员表情ID：{_as_html_code(current_icon)}\n\n" if current_icon else "")
+        + f"今日剩余次数：{_as_html_code(remaining_text)} / {_as_html_code(limit_text)}\n\n"
+        + "请发送新的按钮文案："
     )
 
     if via_query and getattr(via_query, "message", None):
@@ -154,6 +160,52 @@ def _require_admin(update: Update) -> bool:
 
 def _as_html_code(value: object) -> str:
     return f"<code>{html.escape(str(value))}</code>"
+
+
+def _slot_adv_style_enabled() -> bool:
+    return bool(runtime_settings.slot_ad_allow_style())
+
+
+def _slot_adv_icon_enabled() -> bool:
+    if not runtime_settings.slot_ad_allow_custom_emoji():
+        return False
+    return runtime_settings.slot_ad_custom_emoji_mode() != "off"
+
+
+def _slot_user_can_set_advanced() -> bool:
+    if not runtime_settings.slot_ad_user_can_set_advanced():
+        return False
+    return _slot_adv_style_enabled() or _slot_adv_icon_enabled()
+
+
+def _next_advanced_stage(prefix: str) -> Optional[str]:
+    if _slot_adv_style_enabled():
+        return f"{prefix}_style"
+    if _slot_adv_icon_enabled():
+        return f"{prefix}_icon"
+    return None
+
+
+def _advanced_style_prompt() -> str:
+    return "可选：请发送按钮样式（primary/success/danger）。\n如不设置，请发送“无”。"
+
+
+def _advanced_icon_prompt() -> str:
+    return "可选：请发送会员表情 ID（数字字符串）。\n如不设置，请发送“无”。"
+
+
+def _parse_optional_style_input(raw: str) -> Optional[str]:
+    s = str(raw or "").strip()
+    if s.lower() in ("", "无", "none", "off", "skip", "默认", "不设置"):
+        return None
+    return validate_button_style(s)
+
+
+def _parse_optional_icon_input(raw: str) -> Optional[str]:
+    s = str(raw or "").strip()
+    if s.lower() in ("", "无", "none", "off", "skip", "默认", "不设置"):
+        return None
+    return validate_icon_custom_emoji_id(s)
 
 
 def _build_slot_plan_keyboard(*, slot_id: int, current_type: str) -> InlineKeyboardMarkup:
@@ -507,36 +559,21 @@ async def handle_slot_text_input(update: Update, context: CallbackContext) -> No
     text = update.message.text.strip()
     user_id = update.effective_user.id
 
-    if stage == "edit_text":
-        try:
-            flow["button_text"] = validate_button_text(text)
-        except Exception as e:
-            await update.message.reply_text(f"❌ {e}\n\n请重新发送按钮文案：")
-            raise ApplicationHandlerStop()
-        flow["stage"] = "edit_url"
-        context.user_data[FLOW_KEY] = flow
-        await update.message.reply_text("请发送新的按钮链接（仅允许 https://）：")
-        raise ApplicationHandlerStop()
-
-    if stage == "edit_url":
-        try:
-            flow["button_url"] = validate_button_url(text)
-        except Exception as e:
-            await update.message.reply_text(f"❌ {e}\n\n请重新发送链接：")
-            raise ApplicationHandlerStop()
-
-        out_trade_no = str(flow.get("out_trade_no") or "").strip()
-        if not out_trade_no or not flow.get("button_text"):
+    async def _finish_edit(current_flow: dict) -> None:
+        out_trade_no = str(current_flow.get("out_trade_no") or "").strip()
+        if not out_trade_no or not current_flow.get("button_text") or not current_flow.get("button_url"):
             await update.message.reply_text("❌ 会话状态异常，请重新从“修改广告内容”入口开始。")
             context.user_data.pop(FLOW_KEY, None)
             raise ApplicationHandlerStop()
 
         try:
-            result = await update_slot_ad_order_creative_by_user(
+            await update_slot_ad_order_creative_by_user(
                 out_trade_no=str(out_trade_no),
                 user_id=int(user_id),
-                button_text=str(flow["button_text"]),
-                button_url=str(flow["button_url"]),
+                button_text=str(current_flow["button_text"]),
+                button_url=str(current_flow["button_url"]),
+                button_style=(current_flow.get("button_style") or None),
+                icon_custom_emoji_id=(current_flow.get("icon_custom_emoji_id") or None),
             )
         except Exception as e:
             await update.message.reply_text(f"❌ 修改失败：{e}")
@@ -544,59 +581,38 @@ async def handle_slot_text_input(update: Update, context: CallbackContext) -> No
             raise ApplicationHandlerStop()
 
         context.user_data.pop(FLOW_KEY, None)
-
         refreshed = False
         try:
             refreshed = await refresh_last_scheduled_message_keyboard(bot=context.bot)
         except Exception as e:
             logger.warning(f"修改素材后更新键盘失败（可忽略，后续定时消息会生效）: {e}", exc_info=True)
             refreshed = False
-
         await update.message.reply_text(
             "✅ 已更新按钮广告内容。\n"
             + ("✅ 已尝试刷新最近一次定时消息按钮。" if refreshed else "ℹ️ 将在下一次定时消息发送时生效。")
         )
         raise ApplicationHandlerStop()
 
-    if stage == "text":
-        try:
-            flow["button_text"] = validate_button_text(text)
-        except Exception as e:
-            await update.message.reply_text(f"❌ {e}\n\n请重新发送按钮文案：")
-            raise ApplicationHandlerStop()
-        flow["stage"] = "url"
-        context.user_data[FLOW_KEY] = flow
-        await update.message.reply_text("请发送按钮链接（仅允许 https://）：")
-        raise ApplicationHandlerStop()
-
-    if stage == "url":
-        try:
-            flow["button_url"] = validate_button_url(text)
-        except Exception as e:
-            await update.message.reply_text(f"❌ {e}\n\n请重新发送链接：")
-            raise ApplicationHandlerStop()
-
-        slot_id = int(flow["slot_id"])
-        plan_days = int(flow.get("plan_days") or 0)
+    async def _finish_create(current_flow: dict) -> None:
+        slot_id = int(current_flow["slot_id"])
+        plan_days = int(current_flow.get("plan_days") or 0)
         if plan_days <= 0:
             await update.message.reply_text("❌ 租期未选择，请重新从购买入口开始。")
             context.user_data.pop(FLOW_KEY, None)
             raise ApplicationHandlerStop()
 
-        # 最终准入复核（避免用户在输入期间 slot 被占用）
         gate = await ensure_can_purchase_or_renew(slot_id=slot_id, user_id=user_id)
         if gate.get("mode") == "blocked":
             await update.message.reply_text(format_slot_blocked_message(slot_id=slot_id, available_at=float(gate["available_at"])))
             context.user_data.pop(FLOW_KEY, None)
             raise ApplicationHandlerStop()
 
-        if flow.get("mode") == "renew" and gate.get("mode") != "renew":
+        if current_flow.get("mode") == "renew" and gate.get("mode") != "renew":
             await update.message.reply_text("⚠️ 当前不在续期窗口，请稍后再试。")
             context.user_data.pop(FLOW_KEY, None)
             raise ApplicationHandlerStop()
 
-        # 轻度风控审核
-        review = await review_ad_risk(button_text=str(flow["button_text"]), button_url=str(flow["button_url"]))
+        review = await review_ad_risk(button_text=str(current_flow["button_text"]), button_url=str(current_flow["button_url"]))
         if not review.passed:
             await update.message.reply_text(f"❌ 风控拒绝：{review.category}\n原因：{review.reason}\n\n请重新从购买入口提交素材。")
             context.user_data.pop(FLOW_KEY, None)
@@ -604,15 +620,17 @@ async def handle_slot_text_input(update: Update, context: CallbackContext) -> No
 
         creative_id = await create_creative(
             user_id=user_id,
-            button_text=str(flow["button_text"]),
-            button_url=str(flow["button_url"]),
+            button_text=str(current_flow["button_text"]),
+            button_url=str(current_flow["button_url"]),
+            button_style=(current_flow.get("button_style") or None),
+            icon_custom_emoji_id=(current_flow.get("icon_custom_emoji_id") or None),
             ai_review=review.to_dict(),
         )
 
         now = time.time()
         planned_start_at: Optional[float] = None
-        if flow.get("mode") == "renew":
-            planned_start_at = float(flow.get("renew_start_at") or 0) or None
+        if current_flow.get("mode") == "renew":
+            planned_start_at = float(current_flow.get("renew_start_at") or 0) or None
         if planned_start_at is None:
             planned_start_at = await get_next_run_at_for_ads(now=now) or now
 
@@ -623,7 +641,7 @@ async def handle_slot_text_input(update: Update, context: CallbackContext) -> No
                 creative_id=creative_id,
                 plan_days=plan_days,
                 planned_start_at=float(planned_start_at),
-                pay_type=str(flow.get("pay_type") or runtime_settings.upay_default_type()),
+                pay_type=str(current_flow.get("pay_type") or runtime_settings.upay_default_type()),
             )
         except Exception as e:
             logger.error(f"创建 Slot Ads 支付订单失败: {e}", exc_info=True)
@@ -679,7 +697,6 @@ async def handle_slot_text_input(update: Update, context: CallbackContext) -> No
             reply_markup=_with_remind_toggle_button(InlineKeyboardMarkup(rows), enabled=False, out_trade_no=str(out_trade_no)),
         )
 
-        # 额外发送“收款信息 + 二维码”，让用户无需打开网页也能完成支付（保留打开支付页按钮兜底）
         chat_id = update.effective_chat.id if update.effective_chat else None
         if chat_id and pay_address and pay_amount is not None:
             expires_text = None
@@ -718,6 +735,99 @@ async def handle_slot_text_input(update: Update, context: CallbackContext) -> No
 
         context.user_data.pop(FLOW_KEY, None)
         raise ApplicationHandlerStop()
+
+    if stage == "edit_text":
+        try:
+            flow["button_text"] = validate_button_text(text)
+        except Exception as e:
+            await update.message.reply_text(f"❌ {e}\n\n请重新发送按钮文案：")
+            raise ApplicationHandlerStop()
+        flow["stage"] = "edit_url"
+        context.user_data[FLOW_KEY] = flow
+        await update.message.reply_text("请发送新的按钮链接（仅允许 https://）：")
+        raise ApplicationHandlerStop()
+
+    if stage == "edit_url":
+        try:
+            flow["button_url"] = validate_button_url(text)
+        except Exception as e:
+            await update.message.reply_text(f"❌ {e}\n\n请重新发送链接：")
+            raise ApplicationHandlerStop()
+        if _slot_user_can_set_advanced():
+            next_stage = _next_advanced_stage("edit")
+            if next_stage:
+                flow["stage"] = next_stage
+                context.user_data[FLOW_KEY] = flow
+                await update.message.reply_text(_advanced_style_prompt() if next_stage == "edit_style" else _advanced_icon_prompt())
+                raise ApplicationHandlerStop()
+        await _finish_edit(flow)
+
+    if stage == "edit_style":
+        try:
+            flow["button_style"] = _parse_optional_style_input(text)
+        except Exception as e:
+            await update.message.reply_text(f"❌ {e}\n\n请重新发送样式（primary/success/danger）或“无”：")
+            raise ApplicationHandlerStop()
+        if _slot_adv_icon_enabled():
+            flow["stage"] = "edit_icon"
+            context.user_data[FLOW_KEY] = flow
+            await update.message.reply_text(_advanced_icon_prompt())
+            raise ApplicationHandlerStop()
+        await _finish_edit(flow)
+
+    if stage == "edit_icon":
+        try:
+            flow["icon_custom_emoji_id"] = _parse_optional_icon_input(text)
+        except Exception as e:
+            await update.message.reply_text(f"❌ {e}\n\n请重新发送会员表情 ID（数字）或“无”：")
+            raise ApplicationHandlerStop()
+        await _finish_edit(flow)
+
+    if stage == "text":
+        try:
+            flow["button_text"] = validate_button_text(text)
+        except Exception as e:
+            await update.message.reply_text(f"❌ {e}\n\n请重新发送按钮文案：")
+            raise ApplicationHandlerStop()
+        flow["stage"] = "url"
+        context.user_data[FLOW_KEY] = flow
+        await update.message.reply_text("请发送按钮链接（仅允许 https://）：")
+        raise ApplicationHandlerStop()
+
+    if stage == "url":
+        try:
+            flow["button_url"] = validate_button_url(text)
+        except Exception as e:
+            await update.message.reply_text(f"❌ {e}\n\n请重新发送链接：")
+            raise ApplicationHandlerStop()
+        if _slot_user_can_set_advanced():
+            next_stage = "style" if _slot_adv_style_enabled() else "icon"
+            flow["stage"] = next_stage
+            context.user_data[FLOW_KEY] = flow
+            await update.message.reply_text(_advanced_style_prompt() if next_stage == "style" else _advanced_icon_prompt())
+            raise ApplicationHandlerStop()
+        await _finish_create(flow)
+
+    if stage == "style":
+        try:
+            flow["button_style"] = _parse_optional_style_input(text)
+        except Exception as e:
+            await update.message.reply_text(f"❌ {e}\n\n请重新发送样式（primary/success/danger）或“无”：")
+            raise ApplicationHandlerStop()
+        if _slot_adv_icon_enabled():
+            flow["stage"] = "icon"
+            context.user_data[FLOW_KEY] = flow
+            await update.message.reply_text(_advanced_icon_prompt())
+            raise ApplicationHandlerStop()
+        await _finish_create(flow)
+
+    if stage == "icon":
+        try:
+            flow["icon_custom_emoji_id"] = _parse_optional_icon_input(text)
+        except Exception as e:
+            await update.message.reply_text(f"❌ {e}\n\n请重新发送会员表情 ID（数字）或“无”：")
+            raise ApplicationHandlerStop()
+        await _finish_create(flow)
 
 
 async def sched_status(update: Update, context: CallbackContext) -> None:
