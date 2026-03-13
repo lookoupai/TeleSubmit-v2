@@ -472,12 +472,30 @@ async def handle_review_callback(update: Update, context: CallbackContext):
                 except Exception as e:
                     logger.error(f"通知用户 {user_id} 失败: {e}")
 
-                # TODO: 执行发布流程
-                await query.edit_message_text(
-                    f"✅ 已通过审核\n\n"
-                    f"投稿人：@{username}\n"
-                    f"审核人：{query.from_user.username or admin_id}"
-                )
+                # 执行发布流程
+                publish_ok = False
+                publish_error = ""
+                try:
+                    publish_ok, publish_error = await _publish_approved_submission(
+                        context, user_id, username, submission_data
+                    )
+                except Exception as e:
+                    logger.error(f"人工审核通过后发布失败: {e}", exc_info=True)
+                    publish_error = str(e)
+
+                if publish_ok:
+                    await query.edit_message_text(
+                        f"✅ 已通过审核并发布\n\n"
+                        f"投稿人：@{username}\n"
+                        f"审核人：{query.from_user.username or admin_id}"
+                    )
+                else:
+                    await query.edit_message_text(
+                        f"✅ 已通过审核，但发布失败\n\n"
+                        f"投稿人：@{username}\n"
+                        f"审核人：{query.from_user.username or admin_id}\n"
+                        f"错误：{publish_error[:200]}"
+                    )
 
             elif action == 'reject':
                 # 拒绝
@@ -538,6 +556,168 @@ async def handle_review_callback(update: Update, context: CallbackContext):
     except Exception as e:
         logger.error(f"处理审核回调失败: {e}", exc_info=True)
         await query.edit_message_text(f"❌ 处理失败: {str(e)}")
+
+
+async def _publish_approved_submission(
+    context: CallbackContext,
+    user_id: int,
+    username: str,
+    submission_data: dict,
+) -> tuple:
+    """
+    人工审核通过后，从 pending_reviews 中保存的完整 submission_data 执行发布。
+
+    Returns:
+        (success: bool, error_message: str)
+    """
+    from config.settings import CHANNEL_ID, OWNER_ID
+    from handlers.publish import (
+        handle_media_publish,
+        handle_text_publish,
+        handle_document_publish,
+        save_published_post,
+    )
+    from utils.helper_functions import build_caption
+
+    # 从 submission_data 还原发布所需的各字段
+    text_content = submission_data.get('text_content') or None
+    media_list = []
+    doc_list = []
+    try:
+        raw_image = submission_data.get('image_id', '[]')
+        if isinstance(raw_image, str):
+            media_list = json.loads(raw_image)
+        elif isinstance(raw_image, list):
+            media_list = raw_image
+    except (json.JSONDecodeError, TypeError):
+        media_list = []
+
+    try:
+        raw_doc = submission_data.get('document_id', '[]')
+        if isinstance(raw_doc, str):
+            doc_list = json.loads(raw_doc)
+        elif isinstance(raw_doc, list):
+            doc_list = raw_doc
+    except (json.JSONDecodeError, TypeError):
+        doc_list = []
+
+    if not media_list and not doc_list and not text_content:
+        return (False, "投稿内容为空（无媒体、文档或文本）")
+
+    # 构造一个类 dict 对象供 build_caption 使用
+    caption_data = {
+        'link': submission_data.get('link', ''),
+        'title': submission_data.get('title', ''),
+        'note': submission_data.get('note', ''),
+        'tags': submission_data.get('tags', ''),
+        'spoiler': submission_data.get('spoiler', 'false'),
+        'user_id': user_id,
+        'username': username,
+    }
+
+    show_submitter = runtime_settings.bot_show_submitter()
+    caption = build_caption(caption_data, show_submitter=show_submitter)
+
+    spoiler_value = submission_data.get('spoiler', 'false') or 'false'
+    spoiler_flag = spoiler_value.lower() == 'true'
+
+    sent_message = None
+    all_message_ids = []
+
+    # 发布纯文本
+    if text_content and not media_list and not doc_list:
+        sent_message = await handle_text_publish(context, text_content, caption, spoiler_flag)
+        if sent_message:
+            all_message_ids.append(sent_message.message_id)
+
+    # 发布媒体
+    elif media_list:
+        sent_message, all_message_ids = await handle_media_publish(context, media_list, caption, spoiler_flag)
+
+    # 发布文档
+    if doc_list:
+        if sent_message:
+            doc_msg = await handle_document_publish(context, doc_list, None, sent_message.message_id)
+            if doc_msg:
+                all_message_ids.append(doc_msg.message_id)
+        else:
+            sent_message = await handle_document_publish(context, doc_list, caption)
+            if sent_message:
+                all_message_ids.append(sent_message.message_id)
+
+    if not sent_message:
+        return (False, "所有发送方式均失败")
+
+    # 保存到 published_posts
+    try:
+        await save_published_post(
+            user_id,
+            sent_message.message_id,
+            caption_data,
+            media_list,
+            doc_list,
+            all_message_ids,
+            text_content,
+            show_submitter=show_submitter,
+        )
+    except Exception as e:
+        logger.error(f"人工审核发布后保存记录失败: {e}", exc_info=True)
+
+    # 保存投稿指纹
+    if runtime_settings.duplicate_check_enabled():
+        try:
+            user_bio = ''
+            try:
+                chat = await context.bot.get_chat(user_id)
+                user_bio = chat.bio or ''
+            except Exception:
+                pass
+            await save_fingerprint_after_publish(
+                user_id=user_id,
+                username=username,
+                submission_data=submission_data,
+                user_bio=user_bio,
+                submission_id=sent_message.message_id,
+            )
+        except Exception as e:
+            logger.error(f"人工审核发布后保存指纹失败: {e}")
+
+    # 生成投稿链接并通知用户
+    try:
+        if CHANNEL_ID.startswith('@'):
+            channel_username = CHANNEL_ID.lstrip('@')
+            submission_link = f"https://t.me/{channel_username}/{sent_message.message_id}"
+        else:
+            submission_link = "频道无公开链接"
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=f"🎉 投稿已成功发布到频道！\n点击以下链接查看投稿：\n{submission_link}",
+        )
+    except Exception as e:
+        logger.error(f"人工审核发布后通知用户链接失败: {e}")
+
+    # 通知所有者
+    notify_owner = runtime_settings.bot_notify_owner()
+    if notify_owner and OWNER_ID:
+        try:
+            if CHANNEL_ID.startswith('@'):
+                channel_username = CHANNEL_ID.lstrip('@')
+                submission_link = f"https://t.me/{channel_username}/{sent_message.message_id}"
+            else:
+                submission_link = "频道无公开链接"
+            notification_text = (
+                f"📨 新投稿通知（人工审核通过）\n\n"
+                f"👤 投稿人：@{username} (ID: {user_id})\n"
+                f"🔗 查看投稿: {submission_link}\n\n"
+                f"⚙️ 管理操作:\n"
+                f"封禁此用户: /blacklist_add {user_id} 违规内容"
+            )
+            await context.bot.send_message(chat_id=OWNER_ID, text=notification_text)
+        except Exception as e:
+            logger.error(f"人工审核发布后通知所有者失败: {e}")
+
+    logger.info(f"人工审核通过后发布成功: user_id={user_id}, message_id={sent_message.message_id}")
+    return (True, "")
 
 
 async def save_fingerprint_after_publish(

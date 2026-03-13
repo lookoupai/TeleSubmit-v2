@@ -243,13 +243,17 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
 
         # === 审核流程：重复检测和 AI 审核 ===
         if runtime_settings.duplicate_check_enabled() or runtime_settings.ai_review_enabled():
-            # 构建投稿数据用于审核
+            # 构建投稿数据用于审核（同时保存完整发布所需字段，供人工审核通过后发布）
             submission_data = {
                 'text_content': text_content,
                 'title': data['title'] if data['title'] else '',
                 'note': data['note'] if data['note'] else '',
                 'tags': data['tags'] if 'tags' in data.keys() else '',
-                'link': data['link'] if data['link'] else ''
+                'link': data['link'] if data['link'] else '',
+                'image_id': data['image_id'] if 'image_id' in data.keys() else '[]',
+                'document_id': data['document_id'] if 'document_id' in data.keys() else '[]',
+                'spoiler': data['spoiler'] if 'spoiler' in data.keys() and data['spoiler'] else 'false',
+                'mode': data['mode'] if 'mode' in data.keys() else '',
             }
 
             # 获取用户信息
