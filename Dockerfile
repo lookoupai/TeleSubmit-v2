@@ -1,6 +1,6 @@
 # TeleSubmit v2 - Telegram 投稿机器人
-# 基于 Python 3.11 slim 镜像
-FROM python:3.11-slim
+# 基于 Python 3.12 slim 镜像
+FROM python:3.12-slim
 
 # 代理参数（可选，构建时通过 --build-arg 传入）
 ARG HTTP_PROXY
@@ -62,4 +62,3 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
 
 # 运行机器人
 CMD ["python", "-u", "main.py"]
-

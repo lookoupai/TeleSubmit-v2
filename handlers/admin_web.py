@@ -1279,6 +1279,8 @@ async def whitelist_users_get(request: web.Request) -> web.Response:
     else:
         add_hint = ""
 
+    empty_users_row = '<tr><td colspan="5" style="opacity:.75">暂无白名单用户</td></tr>'
+
     body = f"""
 <div class="card">
   <h2 style="margin-top:0">投稿白名单</h2>
@@ -1333,7 +1335,7 @@ async def whitelist_users_get(request: web.Request) -> web.Response:
       </tr>
     </thead>
     <tbody>
-      {''.join(rows) if rows else '<tr><td colspan=\"5\" style=\"opacity:.75\">暂无白名单用户</td></tr>'}
+      {''.join(rows) if rows else empty_users_row}
     </tbody>
   </table>
 </div>
