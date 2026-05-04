@@ -31,6 +31,7 @@ KEY_PAID_AD_ENABLED = "paid_ad.enabled"
 KEY_PAID_AD_PACKAGES_RAW = "paid_ad.packages_raw"
 KEY_PAID_AD_CURRENCY = "paid_ad.currency"
 KEY_PAID_AD_PUBLISH_PREFIX = "paid_ad.publish_prefix"
+KEY_PAID_AD_SUBMIT_MODE = "paid_ad.submit_mode"
 
 KEY_UPAY_DEFAULT_TYPE = "paid_ad.upay_default_type"
 KEY_UPAY_ALLOWED_TYPES = "paid_ad.upay_allowed_types"
@@ -65,6 +66,7 @@ KEY_AD_RISK_SYSTEM_PROMPT = "ad_risk.system_prompt"
 KEY_AD_RISK_PROMPT_TEMPLATE = "ad_risk.prompt_template"
 
 # 投稿配置（热更新）
+KEY_BOT_MODE = "bot.mode"
 KEY_BOT_MIN_TEXT_LENGTH = "bot.min_text_length"
 KEY_BOT_MAX_TEXT_LENGTH = "bot.max_text_length"
 KEY_BOT_ALLOWED_TAGS = "bot.allowed_tags"
@@ -253,6 +255,12 @@ def paid_ad_currency() -> str:
 
 def paid_ad_publish_prefix() -> str:
     return get_str(KEY_PAID_AD_PUBLISH_PREFIX, static.PAID_AD_PUBLISH_PREFIX)
+
+
+def paid_ad_submit_mode() -> str:
+    fallback = str(getattr(static, "PAID_AD_SUBMIT_MODE", "ALL")).strip().upper() or "ALL"
+    mode = get_str(KEY_PAID_AD_SUBMIT_MODE, fallback).strip().upper()
+    return mode if mode in ("MEDIA", "DOCUMENT", "MIXED", "TEXT", "ALL") else fallback
 
 
 def paid_ad_packages_raw() -> str:
@@ -478,6 +486,12 @@ def bot_min_text_length() -> int:
     return max(1, min(4000, get_int(KEY_BOT_MIN_TEXT_LENGTH, int(fallback))))
 
 
+def bot_mode() -> str:
+    fallback = str(getattr(static, "BOT_MODE", "MIXED")).strip().upper() or "MIXED"
+    mode = get_str(KEY_BOT_MODE, fallback).strip().upper()
+    return mode if mode in ("MEDIA", "DOCUMENT", "MIXED", "TEXT", "ALL") else fallback
+
+
 def bot_max_text_length() -> int:
     fallback = int(getattr(static, "MAX_TEXT_LENGTH", 4000))
     return max(1, min(4000, get_int(KEY_BOT_MAX_TEXT_LENGTH, int(fallback))))
@@ -699,6 +713,12 @@ def validate_slot_ad_custom_emoji_mode(mode: str) -> None:
     m = str(mode or "").strip().lower()
     if m not in ("off", "auto", "strict"):
         raise ValueError("SLOT_AD.CUSTOM_EMOJI_MODE 仅支持 off/auto/strict")
+
+
+def validate_bot_mode(mode: str) -> None:
+    value = str(mode or "").strip().upper()
+    if value not in ("MEDIA", "DOCUMENT", "MIXED", "TEXT", "ALL"):
+        raise ValueError("BOT_MODE 仅支持 MEDIA/DOCUMENT/MIXED/TEXT/ALL")
 
 
 def validate_duplicate_check_window_days(days: int) -> None:

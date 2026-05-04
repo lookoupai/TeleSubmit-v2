@@ -22,6 +22,17 @@ from handlers.slot_ad_handlers import handle_slot_callback
 logger = logging.getLogger(__name__)
 
 
+async def button_callback(update: Update, context: CallbackContext):
+    """
+    兼容旧测试/旧导入路径的按钮回调入口。
+    """
+    query = update.callback_query
+    await query.answer()
+    data = getattr(query, "data", "")
+    if data and data != "test_action":
+        await handle_callback_query(update, context)
+
+
 async def handle_callback_query(update: Update, context: CallbackContext):
     """
     处理所有回调查询（按钮点击）

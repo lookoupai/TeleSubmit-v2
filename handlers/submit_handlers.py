@@ -15,6 +15,23 @@ from handlers.publish import publish_submission
 
 logger = logging.getLogger(__name__)
 
+
+async def submit_command(update: Update, context: CallbackContext) -> int:
+    """
+    兼容旧测试/旧导入路径的投稿入口。
+    """
+    from handlers.mode_selection import submit
+    return await submit(update, context)
+
+
+async def cancel_command(update: Update, context: CallbackContext) -> int:
+    """
+    兼容旧测试/旧导入路径的取消入口。
+    """
+    from handlers.command_handlers import cancel
+    return await cancel(update, context)
+
+
 @validate_state(STATE['TAG'])
 async def handle_tag(update: Update, context: CallbackContext) -> int:
     """
@@ -137,10 +154,14 @@ async def handle_note(update: Update, context: CallbackContext) -> int:
     logger.info(f"处理简介输入，user_id: {update.effective_user.id}")
     user_id = update.effective_user.id
     note = update.message.text.strip()
-    note_to_store = "" if note.lower() == "无" else note[:600]
     try:
         async with get_db() as conn:
             c = await conn.cursor()
+            note_to_store = note[:600]
+            if note.lower() == "无":
+                await c.execute("SELECT note FROM submissions WHERE user_id=?", (user_id,))
+                row = await c.fetchone()
+                note_to_store = row["note"] if row and row["note"] else ""
             await c.execute("UPDATE submissions SET note=?, timestamp=? WHERE user_id=?",
                       (note_to_store, datetime.now().timestamp(), user_id))
         logger.info(f"简介保存成功，user_id: {user_id}")
@@ -198,8 +219,8 @@ async def skip_optional_link(update: Update, context: CallbackContext) -> int:
     try:
         async with get_db() as conn:
             c = await conn.cursor()
-            await c.execute("UPDATE submissions SET link=?, title=?, note=?, spoiler=?, timestamp=? WHERE user_id=?",
-                      ("", "", "", "false", datetime.now().timestamp(), user_id))
+            await c.execute("UPDATE submissions SET link=?, title=?, spoiler=?, timestamp=? WHERE user_id=?",
+                      ("", "", "false", datetime.now().timestamp(), user_id))
     except Exception as e:
         logger.error(f"/skip_optional 执行错误: {e}")
         await update.message.reply_text("❌ 跳过可选项失败，请稍后再试")
@@ -224,8 +245,8 @@ async def skip_optional_title(update: Update, context: CallbackContext) -> int:
     try:
         async with get_db() as conn:
             c = await conn.cursor()
-            await c.execute("UPDATE submissions SET title=?, note=?, spoiler=?, timestamp=? WHERE user_id=?",
-                      ("", "", "false", datetime.now().timestamp(), user_id))
+            await c.execute("UPDATE submissions SET title=?, spoiler=?, timestamp=? WHERE user_id=?",
+                      ("", "false", datetime.now().timestamp(), user_id))
     except Exception as e:
         logger.error(f"/skip_optional 执行错误: {e}")
         await update.message.reply_text("❌ 跳过可选项失败，请稍后再试")
@@ -250,8 +271,8 @@ async def skip_optional_note(update: Update, context: CallbackContext) -> int:
     try:
         async with get_db() as conn:
             c = await conn.cursor()
-            await c.execute("UPDATE submissions SET note=?, spoiler=?, timestamp=? WHERE user_id=?",
-                      ("", "false", datetime.now().timestamp(), user_id))
+            await c.execute("UPDATE submissions SET spoiler=?, timestamp=? WHERE user_id=?",
+                      ("false", datetime.now().timestamp(), user_id))
     except Exception as e:
         logger.error(f"/skip_optional 执行错误: {e}")
         await update.message.reply_text("❌ 跳过可选项失败，请稍后再试")

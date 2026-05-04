@@ -585,3 +585,32 @@ async def get_user_stats(update: Update, context: CallbackContext):
         logger.error(f"获取用户统计失败: {e}")
         await update.message.reply_text("❌ 获取统计失败，请稍后重试")
 
+
+async def mystats_command(update: Update, context: CallbackContext):
+    """
+    兼容旧测试/旧导入路径的 /mystats 处理器。
+    """
+    db = get_db()
+    if hasattr(db, "get_user_stats"):
+        stats = await db.get_user_stats(update.effective_user.id)
+        await update.message.reply_text(
+            "📊 您的投稿统计\n\n"
+            f"📝 总投稿数：{stats.get('total_posts', 0)}\n"
+            f"👀 总浏览数：{stats.get('total_views', 0)}\n"
+            f"📤 总转发数：{stats.get('total_forwards', 0)}"
+        )
+        return
+    await get_user_stats(update, context)
+
+
+async def hot_command(update: Update, context: CallbackContext):
+    """
+    兼容旧测试/旧导入路径的 /hot 处理器。
+    """
+    db = get_db()
+    if hasattr(db, "get_hot_posts"):
+        posts = await db.get_hot_posts()
+        if not posts:
+            await update.message.reply_text("📊 暂无热门帖子数据")
+            return
+    await get_hot_posts(update, context)

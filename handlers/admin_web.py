@@ -258,6 +258,16 @@ async def ads_get(request: web.Request) -> web.Response:
         <input type="text" name="paid_ad_publish_prefix" value="{html.escape(runtime_settings.paid_ad_publish_prefix())}" />
       </div>
       <div>
+        <label>广告投稿模式（来源：{_src(runtime_settings.KEY_PAID_AD_SUBMIT_MODE)}）</label>
+        <select name="paid_ad_submit_mode">
+          <option value="TEXT" {"selected" if runtime_settings.paid_ad_submit_mode() == "TEXT" else ""}>TEXT（仅纯文本）</option>
+          <option value="MEDIA" {"selected" if runtime_settings.paid_ad_submit_mode() == "MEDIA" else ""}>MEDIA（仅媒体）</option>
+          <option value="DOCUMENT" {"selected" if runtime_settings.paid_ad_submit_mode() == "DOCUMENT" else ""}>DOCUMENT（仅文档）</option>
+          <option value="MIXED" {"selected" if runtime_settings.paid_ad_submit_mode() == "MIXED" else ""}>MIXED（媒体/文档二选一）</option>
+          <option value="ALL" {"selected" if runtime_settings.paid_ad_submit_mode() == "ALL" else ""}>ALL（文本/媒体/文档）</option>
+        </select>
+      </div>
+      <div>
         <label>订单过期（分钟）（来源：{_src(runtime_settings.KEY_PAY_EXPIRE_MINUTES)}）</label>
         <input type="text" name="pay_expire_minutes" value="{html.escape(str(runtime_settings.pay_expire_minutes()))}" />
       </div>
@@ -368,6 +378,7 @@ async def ads_post(request: web.Request) -> web.Response:
     slot_allow_custom_emoji = _t("slot_ad_allow_custom_emoji") == "1"
     slot_custom_emoji_mode = (_t("slot_ad_custom_emoji_mode") or runtime_settings.slot_ad_custom_emoji_mode()).strip().lower()
     slot_user_can_set_advanced = _t("slot_ad_user_can_set_advanced") == "1"
+    paid_ad_submit_mode = (_t("paid_ad_submit_mode") or runtime_settings.paid_ad_submit_mode()).strip().upper()
 
     paid_packages_raw = _t("paid_ad_packages_raw")
     slot_plans_raw = _t("slot_ad_plans_raw")
@@ -377,6 +388,7 @@ async def ads_post(request: web.Request) -> web.Response:
             runtime_settings.validate_paid_ad_packages_raw(paid_packages_raw)
             if not paid_packages_raw.strip():
                 raise ValueError("PAID_AD.PACKAGES 不能为空")
+            runtime_settings.validate_bot_mode(paid_ad_submit_mode)
         if slot_enabled:
             runtime_settings.validate_slot_ad_plans_raw(slot_plans_raw)
             if not slot_plans_raw.strip():
@@ -433,6 +445,7 @@ async def ads_post(request: web.Request) -> web.Response:
         runtime_settings.KEY_PAID_AD_PACKAGES_RAW: paid_packages_raw,
         runtime_settings.KEY_PAID_AD_CURRENCY: _t("paid_ad_currency"),
         runtime_settings.KEY_PAID_AD_PUBLISH_PREFIX: _t("paid_ad_publish_prefix"),
+        runtime_settings.KEY_PAID_AD_SUBMIT_MODE: paid_ad_submit_mode,
         runtime_settings.KEY_UPAY_DEFAULT_TYPE: _t("upay_default_type"),
         runtime_settings.KEY_UPAY_ALLOWED_TYPES: _t("upay_allowed_types"),
         runtime_settings.KEY_PAY_EXPIRE_MINUTES: str(pay_expire_minutes),
@@ -619,6 +632,7 @@ async def submit_get(request: web.Request) -> web.Response:
 
     min_len = int(runtime_settings.bot_min_text_length())
     max_len = int(runtime_settings.bot_max_text_length())
+    bot_mode = runtime_settings.bot_mode()
     allowed_tags = int(runtime_settings.bot_allowed_tags())
     allowed_file_types = str(runtime_settings.bot_allowed_file_types() or "").strip() or "*"
     show_submitter = bool(runtime_settings.bot_show_submitter())
@@ -658,6 +672,16 @@ async def submit_get(request: web.Request) -> web.Response:
 
 	    <h3 style="margin-top:0" id="basic">基础限制</h3>
 	    <div class="grid">
+      <div>
+        <label>投稿模式（来源：{_src(runtime_settings.KEY_BOT_MODE)}）</label>
+        <select name="bot_mode">
+          <option value="TEXT" {"selected" if bot_mode == "TEXT" else ""}>TEXT（仅纯文本）</option>
+          <option value="MEDIA" {"selected" if bot_mode == "MEDIA" else ""}>MEDIA（仅媒体）</option>
+          <option value="DOCUMENT" {"selected" if bot_mode == "DOCUMENT" else ""}>DOCUMENT（仅文档）</option>
+          <option value="MIXED" {"selected" if bot_mode == "MIXED" else ""}>MIXED（媒体/文档二选一）</option>
+          <option value="ALL" {"selected" if bot_mode == "ALL" else ""}>ALL（文本/媒体/文档）</option>
+        </select>
+      </div>
       <div>
         <label>最小字数（来源：{_src(runtime_settings.KEY_BOT_MIN_TEXT_LENGTH)}）</label>
         <input type="text" name="bot_min_text_length" value="{html.escape(str(min_len))}" />
@@ -836,6 +860,7 @@ async def submit_post(request: web.Request) -> web.Response:
 
     action = str(form.get("action") or "save").strip().lower()
     keys_all = [
+        runtime_settings.KEY_BOT_MODE,
         runtime_settings.KEY_BOT_MIN_TEXT_LENGTH,
         runtime_settings.KEY_BOT_MAX_TEXT_LENGTH,
         runtime_settings.KEY_BOT_ALLOWED_TAGS,
@@ -871,6 +896,9 @@ async def submit_post(request: web.Request) -> web.Response:
         return str(form.get(name) or "").strip()
 
     try:
+        bot_mode = (_t("bot_mode") or runtime_settings.bot_mode()).upper()
+        runtime_settings.validate_bot_mode(bot_mode)
+
         min_len = int(_t("bot_min_text_length") or "0")
         max_len = int(_t("bot_max_text_length") or "0")
         runtime_settings.validate_bot_text_length(min_len=min_len, max_len=max_len)
@@ -920,6 +948,7 @@ async def submit_post(request: web.Request) -> web.Response:
         return _html_page(title="保存失败", body=f"<div class='card'><h2 style='margin-top:0'>保存失败</h2><p>{html.escape(str(e))}</p></div>")
 
     await runtime_settings.set_many(values={
+        runtime_settings.KEY_BOT_MODE: bot_mode,
         runtime_settings.KEY_BOT_MIN_TEXT_LENGTH: str(min_len),
         runtime_settings.KEY_BOT_MAX_TEXT_LENGTH: str(max_len),
         runtime_settings.KEY_BOT_ALLOWED_TAGS: str(allowed_tags),

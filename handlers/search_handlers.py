@@ -3,7 +3,9 @@
 """
 import json
 import logging
+import inspect
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CallbackContext
 from telegram.error import BadRequest, TelegramError
@@ -149,6 +151,10 @@ async def search_posts(update: Update, context: CallbackContext):
             tag_filter=tag_filter if is_tag_search else None,
             sort_by="publish_time"
         )
+        if inspect.isawaitable(search_result):
+            search_result = await search_result
+        if isinstance(search_result, list):
+            search_result = SimpleNamespace(hits=search_result)
         
         if not search_result.hits:
             search_desc = f"标签 #{tag_filter}" if is_tag_search else f"关键词 \"{keyword}\""
@@ -271,6 +277,9 @@ async def search_posts(update: Update, context: CallbackContext):
     except Exception as e:
         logger.error(f"搜索帖子失败: {e}", exc_info=True)
         await update.message.reply_text("❌ 搜索失败，请稍后重试")
+
+
+search_command = search_posts
 
 
 async def handle_search_input(update: Update, context: CallbackContext):
@@ -954,4 +963,3 @@ async def delete_posts_batch(update: Update, context: CallbackContext):
     except Exception as e:
         logger.error(f"批量删除失败: {e}", exc_info=True)
         await update.message.reply_text(f"❌ 批量删除失败: {str(e)[:100]}")
-

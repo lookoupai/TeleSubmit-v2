@@ -19,6 +19,51 @@ from utils import runtime_settings
 
 logger = logging.getLogger(__name__)
 
+
+MAX_NOTE_LENGTH = 600
+
+
+async def handle_photo(update: Update, context: CallbackContext) -> int:
+    """
+    兼容旧测试/旧导入路径的照片处理器。
+    """
+    photos = list(context.user_data.get("photos") or [])
+    if update.message and update.message.photo:
+        photos.append(update.message.photo[-1].file_id)
+    context.user_data["photos"] = photos
+    if update.message:
+        await update.message.reply_text("✅ 已接收图片")
+    return STATE['MEDIA']
+
+
+async def handle_video(update: Update, context: CallbackContext) -> int:
+    """
+    兼容旧测试/旧导入路径的视频处理器。
+    """
+    if update.message and update.message.video:
+        context.user_data["video"] = update.message.video.file_id
+    if update.message:
+        await update.message.reply_text("✅ 已接收视频")
+    return STATE['MEDIA']
+
+
+def merge_media_caption_note(existing_note: str | None, caption: str | None) -> str:
+    """
+    将媒体消息自带 caption 合并到投稿简介。
+    """
+    caption = (caption or "").strip()
+    if not caption:
+        return existing_note or ""
+
+    existing_note = (existing_note or "").strip()
+    if not existing_note:
+        return caption[:MAX_NOTE_LENGTH]
+    if caption in existing_note:
+        return existing_note[:MAX_NOTE_LENGTH]
+
+    return f"{existing_note}\n{caption}"[:MAX_NOTE_LENGTH]
+
+
 @validate_state(STATE['MEDIA'])
 async def handle_media(update: Update, context: CallbackContext) -> int:
     """
@@ -35,6 +80,7 @@ async def handle_media(update: Update, context: CallbackContext) -> int:
     user_id = update.effective_user.id
     snapshot = get_snapshot(context)
     new_media = None
+    media_caption = (update.message.caption or "").strip()
 
     if update.message.photo:
         file_id = update.message.photo[-1].file_id
@@ -106,7 +152,7 @@ async def handle_media(update: Update, context: CallbackContext) -> int:
     try:
         async with get_db() as conn:
             c = await conn.cursor()
-            await c.execute("SELECT image_id, mode FROM submissions WHERE user_id=?", (user_id,))
+            await c.execute("SELECT image_id, mode, note FROM submissions WHERE user_id=?", (user_id,))
             row = await c.fetchone()
             
             if not row:
@@ -127,8 +173,11 @@ async def handle_media(update: Update, context: CallbackContext) -> int:
                 return STATE['MEDIA']
                 
             media_list.append(new_media)
-            await c.execute("UPDATE submissions SET image_id=?, timestamp=? WHERE user_id=?",
-                      (json.dumps(media_list), datetime.now().timestamp(), user_id))
+            note = merge_media_caption_note(row["note"], media_caption)
+            await c.execute(
+                "UPDATE submissions SET image_id=?, note=?, timestamp=? WHERE user_id=?",
+                (json.dumps(media_list), note, datetime.now().timestamp(), user_id)
+            )
             
             logger.info(f"当前媒体数量：{len(media_list)}")
             
@@ -164,6 +213,7 @@ async def done_media(update: Update, context: CallbackContext) -> int:
     """
     logger.info(f"媒体上传结束，user_id: {update.effective_user.id}")
     user_id = update.effective_user.id
+    snapshot = get_snapshot(context)
     
     try:
         async with get_db() as conn:
@@ -184,7 +234,6 @@ async def done_media(update: Update, context: CallbackContext) -> int:
                 await update.message.reply_text("⚠️ 请至少发送一个媒体文件")
                 return STATE['MEDIA']
                 
-        snapshot = get_snapshot(context)
         allowed_tags = int(snapshot.get("allowed_tags", 30))
         if allowed_tags <= 0:
             try:

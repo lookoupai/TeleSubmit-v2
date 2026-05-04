@@ -25,6 +25,17 @@ from utils.database import get_user_state, get_all_user_states
 
 logger = logging.getLogger(__name__)
 
+
+async def start_command(update: Update, context: CallbackContext):
+    """
+    兼容旧测试/旧导入路径的 /start 处理器。
+    """
+    try:
+        await update.message.reply_text(MessageFormatter.welcome_message(), parse_mode="HTML")
+    except Exception:
+        await update.message.reply_text("欢迎使用投稿机器人")
+
+
 async def cancel(update: Update, context: CallbackContext) -> int:
     """
     处理 /cancel 命令，取消当前会话
@@ -157,6 +168,13 @@ async def help_command(update: Update, context: CallbackContext):
         await update.message.reply_text("❌ 发送帮助信息失败，请稍后重试")
 
 
+async def about_command(update: Update, context: CallbackContext):
+    """
+    兼容旧测试/旧导入路径的 /about 处理器。
+    """
+    await update.message.reply_text(MessageFormatter.about_message(), parse_mode="HTML")
+
+
 # 管理面板相关功能已移除
 
 
@@ -242,7 +260,8 @@ async def settings(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     
     try:
-        from config.settings import CHANNEL_ID, BOT_MODE, SHOW_SUBMITTER, TIMEOUT, ALLOWED_TAGS
+        from config.settings import CHANNEL_ID, TIMEOUT
+        from utils import runtime_settings
         
         # 基础设置信息（所有用户可见）
         settings_info = f"""
@@ -252,12 +271,13 @@ async def settings(update: Update, context: CallbackContext):
 • 频道ID: <code>{CHANNEL_ID}</code>
 
 <b>🔄 投稿设置：</b>
-• 机器人模式: {BOT_MODE}
-• 最大标签数: {ALLOWED_TAGS}
+• 机器人模式: {runtime_settings.bot_mode()}
+• 广告投稿模式: {runtime_settings.paid_ad_submit_mode()}
+• 最大标签数: {runtime_settings.bot_allowed_tags()}
 • 会话超时: {TIMEOUT}秒
 
 <b>👁️ 隐私设置：</b>
-• 显示投稿人: {'是' if SHOW_SUBMITTER else '否'}
+• 显示投稿人: {'是' if runtime_settings.bot_show_submitter() else '否'}
 
 <b>💡 说明：</b>
 • MEDIA - 仅支持图片/视频
@@ -291,7 +311,8 @@ async def debug(update: Update, context: CallbackContext):
     
     # 构建调试信息
     try:
-        from config.settings import OWNER_ID, CHANNEL_ID, BOT_MODE, SHOW_SUBMITTER, NOTIFY_OWNER
+        from config.settings import OWNER_ID, CHANNEL_ID
+        from utils import runtime_settings
         
         debug_info = (
             "🔍 **系统调试信息**\n\n"
@@ -299,9 +320,10 @@ async def debug(update: Update, context: CallbackContext):
             f"🤖 机器人所有者ID: `{OWNER_ID}`\n"
             f"✅ 您是所有者: {is_owner(user_id)}\n\n"
             f"📺 频道ID: {CHANNEL_ID}\n"
-            f"🔄 机器人模式: {BOT_MODE}\n"
-            f"👁️ 显示投稿人: {SHOW_SUBMITTER}\n"
-            f"📲 通知所有者: {NOTIFY_OWNER}\n"
+            f"🔄 机器人模式: {runtime_settings.bot_mode()}\n"
+            f"📢 广告投稿模式: {runtime_settings.paid_ad_submit_mode()}\n"
+            f"👁️ 显示投稿人: {runtime_settings.bot_show_submitter()}\n"
+            f"📲 通知所有者: {runtime_settings.bot_notify_owner()}\n"
             f"⏱️ 会话超时: {TIMEOUT}秒\n\n"
             f"🗄️ 黑名单用户数: {len(_blacklist)}\n"
             f"📂 用户会话数: {len(get_all_user_states())}\n"

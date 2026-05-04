@@ -116,6 +116,42 @@ class TestMediaListParsing:
         assert media_list == []
 
 
+class TestMediaCaptionHandling:
+    """媒体 caption 合并测试"""
+
+    @pytest.mark.unit
+    def test_merge_caption_into_empty_note(self):
+        from handlers.media_handlers import merge_media_caption_note
+
+        result = merge_media_caption_note("", "图片说明")
+
+        assert result == "图片说明"
+
+    @pytest.mark.unit
+    def test_merge_caption_preserves_existing_note(self):
+        from handlers.media_handlers import merge_media_caption_note
+
+        result = merge_media_caption_note("已有简介", "图片说明")
+
+        assert result == "已有简介\n图片说明"
+
+    @pytest.mark.unit
+    def test_merge_caption_ignores_duplicate_caption(self):
+        from handlers.media_handlers import merge_media_caption_note
+
+        result = merge_media_caption_note("图片说明", "图片说明")
+
+        assert result == "图片说明"
+
+    @pytest.mark.unit
+    def test_merge_caption_limits_note_length(self):
+        from handlers.media_handlers import merge_media_caption_note
+
+        result = merge_media_caption_note("", "a" * 1000)
+
+        assert len(result) == 600
+
+
 class TestModeSelection:
     """模式选择测试"""
     

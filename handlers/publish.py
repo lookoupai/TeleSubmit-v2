@@ -33,6 +33,24 @@ from utils import runtime_settings
 
 logger = logging.getLogger(__name__)
 
+
+async def publish_to_channel(context: CallbackContext, post_data: dict):
+    """
+    兼容旧测试/旧导入路径的简化发布函数。
+    """
+    text = post_data.get("content") or post_data.get("text") or post_data.get("text_content") or ""
+    sent_message = await context.bot.send_message(chat_id=CHANNEL_ID, text=text)
+
+    db = get_db()
+    if hasattr(db, "add_post"):
+        await db.add_post({
+            **post_data,
+            "message_id": getattr(sent_message, "message_id", None),
+        })
+
+    return sent_message
+
+
 async def save_published_post(
     user_id,
     message_id,

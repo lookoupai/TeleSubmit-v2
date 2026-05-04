@@ -113,6 +113,14 @@ class SearchHit:
         self.highlighted_desc = highlighted_desc or description
         self.matched_fields = matched_fields or []  # 记录匹配的字段
 
+    def __str__(self) -> str:
+        return " ".join([
+            str(self.title or ""),
+            str(self.description or ""),
+            str(self.tags or ""),
+            str(self.filename or ""),
+        ]).strip()
+
 
 class SearchResult:
     """搜索结果集"""
@@ -123,6 +131,12 @@ class SearchResult:
         self.total_results = total_results
         self.is_last_page = is_last_page
         self.page_num = page_num
+
+    def __iter__(self):
+        return iter(self.hits)
+
+    def __len__(self) -> int:
+        return len(self.hits)
 
 
 class PostSearchEngine:
@@ -288,6 +302,18 @@ class PostSearchEngine:
             with self.ix.writer() as writer:
                 writer.add_document(**post.as_dict())
         logger.debug(f"添加帖子到索引: {post.message_id}")
+
+    def add_document(self, post: PostDocument):
+        """
+        向后兼容旧 SearchEngine API。
+        """
+        self.add_post(post)
+
+    def commit(self):
+        """
+        向后兼容旧 SearchEngine API；当前实现单次写入已自动提交。
+        """
+        return None
     
     def update_post(self, post: PostDocument):
         """
@@ -315,7 +341,8 @@ class PostSearchEngine:
                time_filter: Optional[DateRange] = None,
                user_filter: Optional[int] = None,
                tag_filter: Optional[str] = None,
-               sort_by: str = "publish_time") -> SearchResult:
+               sort_by: str = "publish_time",
+               limit: Optional[int] = None) -> SearchResult:
         """
         搜索帖子
         
@@ -331,21 +358,19 @@ class PostSearchEngine:
         Returns:
             SearchResult: 搜索结果
         """
+        if limit is not None:
+            page_len = int(limit)
+
         try:
             # 解析查询
             if query_str.strip():
-                # 检测是否包含中文字符，且使用 SimpleAnalyzer
-                # SimpleAnalyzer 将中文作为整体索引，需要特殊处理以支持部分匹配
+                # 中文短词查询使用通配符兜底，兼容 jieba/SimpleAnalyzer 的分词差异。
                 has_chinese = bool(re.search(r'[\u4e00-\u9fff]', query_str))
-                use_simple_analyzer = SEARCH_ANALYZER == 'simple'
                 
-                if has_chinese and use_simple_analyzer:
-                    # 对于中文查询，使用通配符查询以支持部分匹配
-                    # 在多个字段中搜索包含查询字符串的内容
+                if has_chinese:
                     query_terms = []
                     search_fields = ['title', 'description', 'tags', 'filename']
                     for field in search_fields:
-                        # 使用通配符匹配，支持部分匹配
                         query_terms.append(Wildcard(field, f'*{query_str}*'))
                     q = Or(query_terms) if query_terms else self.query_parser.parse(query_str)
                 else:
@@ -520,4 +545,3 @@ def init_search_engine(index_dir: str = "search_index", from_scratch: bool = Fal
 
 # 向后兼容别名：历史代码从 utils.search_engine 导入 SearchEngine
 SearchEngine = PostSearchEngine
-

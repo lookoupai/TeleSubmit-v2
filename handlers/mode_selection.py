@@ -7,7 +7,7 @@ from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardB
 from telegram.ext import ConversationHandler, CallbackContext
 
 from config.settings import (
-    BOT_MODE, MODE_MEDIA, MODE_DOCUMENT, MODE_MIXED, MODE_TEXT, MODE_ALL,
+    MODE_MEDIA, MODE_DOCUMENT, MODE_MIXED, MODE_TEXT, MODE_ALL,
     TEXT_ONLY_MODE, DEFAULT_SUBMIT_MODE
 )
 from utils.file_validator import create_file_validator
@@ -15,11 +15,22 @@ from models.state import STATE
 from database.db_manager import get_db, cleanup_old_data
 from utils.blacklist import is_blacklisted
 from utils.submit_settings import ensure_snapshot, get_snapshot
+from utils import runtime_settings
 from ui.keyboards import Keyboards
 from handlers.text_handlers import show_text_welcome
 from handlers.slot_ad_handlers import try_handle_start_args
 
 logger = logging.getLogger(__name__)
+
+
+def _active_submit_mode(context: CallbackContext) -> str:
+    """
+    根据当前入口选择投稿模式：普通投稿与付费广告可独立配置。
+    """
+    if bool((context.user_data or {}).get("paid_ad")) and runtime_settings.paid_ad_enabled():
+        return runtime_settings.paid_ad_submit_mode()
+    return runtime_settings.bot_mode()
+
 
 async def submit(update: Update, context: CallbackContext) -> int:
     """
@@ -59,7 +70,8 @@ async def submit(update: Update, context: CallbackContext) -> int:
             await c.execute("DELETE FROM submissions WHERE user_id=?", (user_id,))
 
             # 根据配置决定模式
-            if BOT_MODE == MODE_TEXT:
+            bot_mode = _active_submit_mode(context)
+            if bot_mode == MODE_TEXT:
                 # 仅纯文本模式
                 mode = "text"
                 logger.info(f"使用纯文本模式，user_id: {user_id}")
@@ -72,7 +84,7 @@ async def submit(update: Update, context: CallbackContext) -> int:
                 logger.info(f"已发送纯文本欢迎信息，切换到TEXT_CONTENT状态，user_id: {user_id}")
                 return STATE['TEXT_CONTENT']
 
-            elif BOT_MODE == MODE_MEDIA:
+            elif bot_mode == MODE_MEDIA:
                 mode = "media"
                 logger.info(f"使用媒体模式，user_id: {user_id}")
                 await c.execute("INSERT INTO submissions (user_id, timestamp, mode, image_id, document_id, username) VALUES (?, ?, ?, ?, ?, ?)",
@@ -82,7 +94,7 @@ async def submit(update: Update, context: CallbackContext) -> int:
                 logger.info(f"已发送媒体欢迎信息，切换到MEDIA状态，user_id: {user_id}")
                 return STATE['MEDIA']
 
-            elif BOT_MODE == MODE_DOCUMENT:
+            elif bot_mode == MODE_DOCUMENT:
                 mode = "document"
                 logger.info(f"使用文档模式，user_id: {user_id}")
                 await c.execute("INSERT INTO submissions (user_id, timestamp, mode, image_id, document_id, username) VALUES (?, ?, ?, ?, ?, ?)",
@@ -92,7 +104,7 @@ async def submit(update: Update, context: CallbackContext) -> int:
                 logger.info(f"已发送文档欢迎信息，切换到DOC状态，user_id: {user_id}")
                 return STATE['DOC']
 
-            elif BOT_MODE == MODE_ALL:
+            elif bot_mode == MODE_ALL:
                 # 全部模式：文本+媒体+文档
                 logger.info(f"使用全部模式（ALL），user_id: {user_id}")
                 await c.execute(
@@ -281,7 +293,7 @@ async def select_mode(update: Update, context: CallbackContext) -> int:
                 # 无效选择，根据当前模式显示不同键盘
                 logger.warning(f"无效的模式选择: '{text}'，user_id: {user_id}")
 
-                if BOT_MODE == MODE_ALL:
+                if _active_submit_mode(context) == MODE_ALL:
                     text_button = '📝 纯文本'
                     media_button = '🖼 媒体投稿'
                     doc_button = '📁 文档投稿'

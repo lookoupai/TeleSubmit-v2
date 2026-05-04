@@ -35,6 +35,9 @@ class TTLCache:
         self._store[key] = (expire_at, value)
         self._evict_if_needed()
 
+    def delete(self, key: str) -> None:
+        self._store.pop(key, None)
+
     def cached(self, key_builder: Callable[..., str], ttl: int | None = None):
         def decorator(func):
             def wrapper(*args, **kwargs):
@@ -48,4 +51,6 @@ class TTLCache:
             return wrapper
         return decorator
 
+
+Cache = TTLCache
 
