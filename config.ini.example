@@ -149,6 +149,8 @@ CURRENCY = USDT
 PUBLISH_PREFIX = 📢 广告
 
 # UPAY_PRO 网关
+# Docker 部署且 UPAY_PRO 暴露在宿主机 8090 时，使用：
+# UPAY_BASE_URL = http://host.docker.internal:8090
 UPAY_BASE_URL = http://127.0.0.1:8090
 UPAY_SECRET_KEY = 
 UPAY_DEFAULT_TYPE = USDT-TRC20

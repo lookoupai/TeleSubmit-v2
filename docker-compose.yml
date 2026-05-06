@@ -61,7 +61,10 @@ services:
         max-file: "5"
     
     # 网络模式
+    # host.docker.internal 用于容器访问宿主机服务（例如宿主机/另一个端口映射容器上的 UPAY_PRO:8090）。
     network_mode: bridge
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     
     # 健康检查
     healthcheck:

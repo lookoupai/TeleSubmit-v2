@@ -71,6 +71,8 @@ PUBLISH_PREFIX = 📢 广告
 
 # UPAY_PRO 网关
 UPAY_BASE_URL = http://127.0.0.1:8090      # 占位：部署后替换为实际地址（建议 HTTPS/内网）
+# Docker 部署且 UPAY_PRO 暴露在宿主机 8090 时：
+# UPAY_BASE_URL = http://host.docker.internal:8090
 UPAY_SECRET_KEY =                            # 占位：部署后填写
 UPAY_DEFAULT_TYPE = USDT-TRC20               # 默认币种
 UPAY_ALLOWED_TYPES = USDT-TRC20,TRX,USDT-BSC,USDT-ERC20,USDT-Polygon
@@ -88,6 +90,7 @@ PAY_EXPIRE_MINUTES = 30
 
 说明：
 - `PUBLIC_BASE_URL` 是 Bot 服务对外 HTTPS 域名（用于 `notify_url`），与 `UPAY_BASE_URL`（支付网关地址）不同。
+- Docker 容器内的 `127.0.0.1` 指向 Bot 容器自身；如果 UPAY_PRO 在宿主机或通过宿主机端口映射暴露，应配置 `UPAY_BASE_URL = http://host.docker.internal:8090`，并在 Compose 中保留 `extra_hosts: ["host.docker.internal:host-gateway"]`。
 - `UPAY_DEFAULT_TYPE` 默认为 `USDT-TRC20`；币种是网关侧展示/收款地址选择，不影响“次数”本身。
 
 ---

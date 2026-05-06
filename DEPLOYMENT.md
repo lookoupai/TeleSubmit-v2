@@ -115,6 +115,7 @@ nano config.ini  # 编辑配置文件
 **重要说明**：
 - 私有仓库镜像需先在部署机执行 `docker login ghcr.io` 再 `docker-compose pull`
 - 如需固定到某个版本/提交的镜像，可使用环境变量覆盖（见下方示例）
+- Docker 容器内的 `127.0.0.1` 只指向容器自身；如果 `UPAY_PRO` 暴露在宿主机 `8090`，请在 `config.ini` 中配置 `UPAY_BASE_URL = http://host.docker.internal:8090`，并保留 `docker-compose.yml` 中的 `extra_hosts` 映射。
 
 **Docker 优势**：
 - 环境隔离，不影响主机

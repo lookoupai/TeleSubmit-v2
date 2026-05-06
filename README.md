@@ -161,6 +161,7 @@ RATE_LIMIT_COUNT = 3                # 24小时内最大投稿次数
 - 默认使用 `ghcr.io/lookoupai/telesubmit-v2:latest`（`./deploy.sh` 会自动 `docker-compose pull`）
 - 若镜像为私有包，部署机需先执行 `docker login ghcr.io`
 - 生产环境建议固定标签（例如 `sha-xxxxxxx`）：`TELESUBMIT_IMAGE="ghcr.io/lookoupai/telesubmit-v2:sha-ffa158c" docker-compose up -d`
+- Docker 内访问宿主机/端口映射容器上的 `UPAY_PRO:8090` 时，`UPAY_BASE_URL` 应使用 `http://host.docker.internal:8090`，不要使用 `127.0.0.1`
 
 ### 用户命令
 
