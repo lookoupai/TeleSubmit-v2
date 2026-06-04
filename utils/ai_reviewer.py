@@ -160,7 +160,7 @@ class AIReviewer:
         )
 
         # 解析响应
-        content = response.choices[0].message.content.strip()
+        content = (response.choices[0].message.content or "").strip()
 
         # 尝试提取 JSON
         result = self._parse_response(content)
@@ -219,34 +219,71 @@ class AIReviewer:
 
         return prompt
 
+    def _extract_json_content(self, content: str) -> Optional[str]:
+        """从 AI 响应中提取 JSON 对象文本"""
+        content = (content or "").strip().lstrip("\ufeff").strip()
+        if not content:
+            return None
+
+        candidates = []
+        if "```" in content:
+            parts = content.split("```")
+            for block in parts[1::2]:
+                block = block.strip()
+                lines = block.splitlines()
+                if lines and lines[0].strip().lower() == "json":
+                    block = "\n".join(lines[1:]).strip()
+                candidates.append(block)
+
+        candidates.append(content)
+        for candidate in candidates:
+            start = candidate.find("{")
+            end = candidate.rfind("}")
+            if start != -1 and end != -1 and start < end:
+                return candidate[start:end + 1].strip()
+
+        return None
+
+    def _parse_bool_value(self, value: Any, default: bool = False) -> bool:
+        """解析 AI 响应中的布尔字段"""
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in ("true", "1", "yes", "y", "是", "通过"):
+                return True
+            if normalized in ("false", "0", "no", "n", "否", "拒绝"):
+                return False
+        return bool(value)
+
     def _parse_response(self, content: str) -> ReviewResult:
         """解析 AI 响应"""
+        raw_content = content or ""
         try:
-            # 尝试提取 JSON 块
-            if '```json' in content:
-                start = content.find('```json') + 7
-                end = content.find('```', start)
-                content = content[start:end].strip()
-            elif '```' in content:
-                start = content.find('```') + 3
-                end = content.find('```', start)
-                content = content[start:end].strip()
-
-            # 清理可能的多余字符
-            content = content.strip()
-            if content.startswith('{') and content.endswith('}'):
+            content = self._extract_json_content(raw_content)
+            if content:
                 data = json.loads(content)
+                if not isinstance(data, dict):
+                    raise ValueError(f"AI 响应 JSON 不是对象: {type(data)}")
+
+                try:
+                    confidence = float(data.get('confidence', 0.5))
+                except (TypeError, ValueError):
+                    confidence = 0.5
 
                 return ReviewResult(
-                    approved=data.get('approved', False),
-                    confidence=float(data.get('confidence', 0.5)),
-                    reason=data.get('reason', ''),
-                    category=data.get('category', ''),
-                    requires_manual=data.get('requires_manual', False)
+                    approved=self._parse_bool_value(data.get('approved'), False),
+                    confidence=confidence,
+                    reason=str(data.get('reason', '') or ''),
+                    category=str(data.get('category', '') or ''),
+                    requires_manual=self._parse_bool_value(data.get('requires_manual'), False)
                 )
 
-        except json.JSONDecodeError as e:
-            logger.error(f"解析 AI 响应失败: {e}, content={content[:200]}")
+            logger.error(f"AI 响应不包含可解析 JSON, content={raw_content[:500]}")
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"解析 AI 响应失败: {e}, content={raw_content[:500]}")
 
         # 解析失败，使用默认值
         return ReviewResult(
