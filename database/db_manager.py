@@ -568,6 +568,8 @@ async def init_db():
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_slot_ad_order_edits_order_day ON slot_ad_order_edits(out_trade_no, day_key)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_slot_ad_order_edits_created_at ON slot_ad_order_edits(created_at DESC)")
 
+            from database.migrations import migrate
+            await migrate(conn)
             await conn.commit()
             logger.info("数据库初始化完成")
     except Exception as e:

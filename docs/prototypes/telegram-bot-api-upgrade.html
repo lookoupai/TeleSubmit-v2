@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TeleSubmit Telegram 优化交互预览</title>
+<style>body{margin:0;padding:12px;background:#fff}@media(prefers-color-scheme:dark){body{background:#171a1f}}</style>
+<body>
+<!-- preview-fragment-start -->
+<style>
+.ts-plan{--fb-text:#202936;--fb-muted:#606b79;--fb-card:#f3f5f7;--fb-border:#d9dfe6;--fb-primary:#285a83;--fb-on-primary:#fff;--fb-soft:#eaf1f8;--fb-ok:#226d49;--fb-warn:#805b16;max-width:860px;margin:0 auto;color:var(--text,var(--fb-text));font-family:var(--font-body,system-ui,sans-serif);font-size:1rem;line-height:1.55;background:transparent}
+@media(prefers-color-scheme:dark){.ts-plan{--fb-text:#e6eaf0;--fb-muted:#a8b2bf;--fb-card:#242b33;--fb-border:#45505e;--fb-primary:#a8c7e5;--fb-on-primary:#13283a;--fb-soft:#273d50;--fb-ok:#9ed4b4;--fb-warn:#e7c787;color-scheme:dark}}
+.ts-plan *{box-sizing:border-box}.ts-plan [hidden]{display:none!important}.ts-plan p{margin:0 0 10px}.ts-plan h3{font-size:1.08rem;line-height:1.45;margin:0 0 8px}.ts-plan .muted{color:var(--muted,var(--fb-muted));font-size:.92rem}.ts-plan .intro{font-weight:650;font-size:1.06rem}.ts-plan button,.ts-plan select{font:inherit;font-size:1rem;min-height:44px;border:1px solid var(--border,var(--fb-border));border-radius:8px;padding:8px 12px;color:var(--text,var(--fb-text));background:var(--card,var(--fb-card))}.ts-plan button{cursor:pointer}.ts-plan button:disabled{cursor:default;color:var(--muted,var(--fb-muted));border-style:dashed}.ts-plan button:focus-visible,.ts-plan select:focus-visible,.ts-plan summary:focus-visible{outline:3px solid var(--accent,var(--fb-primary));outline-offset:3px}.ts-plan .phase-nav{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin:16px 0}.ts-plan .phase-nav button{text-align:left;padding:9px 10px}.ts-plan .phase-nav small{display:block;font-size:.86rem}.ts-plan button[aria-pressed=true]{background:var(--primary-bg,var(--fb-primary));border-color:var(--primary-bg,var(--fb-primary));color:var(--on-primary,var(--fb-on-primary));font-weight:650}.ts-plan .phase-nav button[aria-pressed=true] small{color:inherit}.ts-plan .panel{padding:0 1px}.ts-plan .scope{margin-bottom:13px}.ts-plan .sample{border:1px solid var(--border,var(--fb-border));border-radius:12px;padding:16px;max-width:590px;background:var(--surface,transparent);overflow-wrap:anywhere}.ts-plan .sample .top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}.ts-plan .sample .state{font-size:.9rem;color:var(--muted,var(--fb-muted));text-align:right;flex-shrink:0}.ts-plan .sample .state.ok{color:var(--ok,var(--fb-ok))}.ts-plan .sample .state.warn{color:var(--warn,var(--fb-warn))}.ts-plan .title{font-weight:650;font-size:1.08rem}.ts-plan .actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}.ts-plan .actions button{flex:1 1 auto}.ts-plan .primary{background:var(--primary-bg,var(--fb-primary));border-color:var(--primary-bg,var(--fb-primary));color:var(--on-primary,var(--fb-on-primary))}.ts-plan .primary:disabled{background:var(--card,var(--fb-card));border-color:var(--border,var(--fb-border));color:var(--muted,var(--fb-muted))}.ts-plan .annotation{margin-top:11px;max-width:620px;font-size:.92rem;color:var(--muted,var(--fb-muted))}.ts-plan .tools{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:11px 0}.ts-plan .tools label{font-size:.92rem}.ts-plan .tools button{font-size:.93rem}.ts-plan .caption{margin-top:13px;font-size:.92rem;color:var(--muted,var(--fb-muted))}.ts-plan .private{margin-top:11px;background:var(--accent-soft,var(--fb-soft));border-radius:9px;padding:12px}.ts-plan .private p:last-child{margin:0}.ts-plan .rating{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:5px;margin-top:12px}.ts-plan .rating button{padding:7px 4px}.ts-plan .summary-button{display:block;width:100%;margin-top:6px}.ts-plan .separation{border-top:1px solid var(--border,var(--fb-border));margin-top:14px;padding-top:13px}.ts-plan .amount{font-size:1.7rem;font-weight:650;letter-spacing:-.025em;margin:7px 0}.ts-plan .amount span{font-size:1rem;letter-spacing:0;font-weight:400}.ts-plan details{margin:12px 0}.ts-plan summary{cursor:pointer;min-height:44px;display:flex;align-items:center;font-weight:550}.ts-plan .plain{white-space:pre-line}.ts-plan .notice{min-height:24px;margin-top:10px;font-size:.92rem;color:var(--muted,var(--fb-muted))}.ts-plan .foot{margin-top:17px;font-size:.85rem;color:var(--muted,var(--fb-muted))}
+@media(max-width:520px){.ts-plan .phase-nav{grid-template-columns:repeat(2,minmax(0,1fr))}.ts-plan .sample{padding:13px}.ts-plan .sample .top{gap:8px}.ts-plan .sample .state{max-width:8em}.ts-plan .tools select{max-width:100%}}
+</style>
+<section class="ts-plan" aria-label="TeleSubmit 优化方案交互预览">
+  <p class="intro">先让操作可靠，再改善频道反馈与订单展示。</p>
+  <p class="muted">可点击的设计预览 · 示例数据 · 不连接 Telegram 或支付服务</p>
+  <nav class="phase-nav" aria-label="选择优化阶段">
+    <button type="button" data-phase="p0" aria-pressed="true">① 可靠操作<small>P0 · 第一批开发</small></button>
+    <button type="button" data-phase="p1" aria-pressed="false">② 个人反馈<small>P1 · 频道评分</small></button>
+    <button type="button" data-phase="p2" aria-pressed="false">③ 富消息<small>P2 · 内容与搜索</small></button>
+    <button type="button" data-phase="p3" aria-pressed="false">④ 订单卡片<small>P3 · 仅私聊</small></button>
+  </nav>
+  <div class="panel" data-panel="p0">
+    <h3>审核完成后，重复操作返回同一个结果</h3>
+    <p class="muted scope">点击下方操作查看状态；超时分支保留人工核对入口。</p>
+    <div class="sample">
+      <div class="top"><span class="title">资源分享 #1042</span><span class="state" id="review-status">待审核</span></div>
+      <p class="muted">投稿人 @demo_user · 示例稿件</p>
+      <p>一份 Python 入门学习资料，包含章节说明和练习附件。</p>
+      <p class="muted" id="review-detail">AI 建议人工确认内容完整性，请选择审核结果。</p>
+      <div class="actions">
+        <button type="button" class="primary" id="approve">通过并发布</button>
+        <button type="button" id="reject">拒绝</button>
+      </div>
+      <div class="actions"><button type="button" id="ban">拒绝并拉黑…</button></div>
+      <div class="private" id="ban-confirm" hidden>
+        <p>确认拒绝此稿，并禁止 @demo_user 再次投稿？</p>
+        <div class="actions"><button type="button" id="ban-yes">确认拒绝并拉黑</button><button type="button" id="ban-no">返回审核</button></div>
+      </div>
+    </div>
+    <div class="tools"><button type="button" id="repeat">模拟另一管理员再次通过</button><button type="button" id="timeout">查看发送超时分支</button><button type="button" id="reset-review">重置示例</button></div>
+    <p class="notice" id="review-note" aria-live="polite">按钮禁用负责反馈；后台唯一操作记录负责阻止重复发布。</p>
+  </div>
+  <div class="panel" data-panel="p1" hidden>
+    <h3>公开评分汇总，个人结果仅点击者可见</h3>
+    <div class="tools" aria-label="模拟点击者"><span class="muted">模拟点击者</span><button type="button" data-viewer="a" aria-pressed="true">用户甲</button><button type="button" data-viewer="b" aria-pressed="false">用户乙</button></div>
+    <div class="sample">
+      <div class="title">频道资源：Python 学习指南</div>
+      <p class="muted">#Python #教程</p>
+      <p>欢迎分享你对这份资料的评价。</p>
+      <div class="rating" aria-label="为资源评分"><button type="button" data-score="1">1 星</button><button type="button" data-score="2">2 星</button><button type="button" data-score="3">3 星</button><button type="button" data-score="4">4 星</button><button type="button" data-score="5">5 星</button></div>
+      <button type="button" class="summary-button" id="rating-summary" disabled>平均 4.6 · 128 人参与</button>
+      <div class="private" id="private-rating" hidden><p class="muted">仅当前点击者可见</p><p id="personal-score"></p><p class="muted">可再次点击上方星级修改你的评分。</p></div>
+    </div>
+    <p class="annotation" id="rating-note" aria-live="polite">先为用户甲评分，再切换用户乙，查看个人反馈的隔离效果。</p>
+  </div>
+  <div class="panel" data-panel="p2" hidden>
+    <h3>正文、文件和操作集中展示</h3>
+    <div class="tools" aria-label="消息视图"><button type="button" data-format="rich" aria-pressed="true">富消息视图</button><button type="button" data-format="plain" aria-pressed="false">普通文本视图</button></div>
+    <div class="sample">
+      <div id="rich-preview"><div class="title">Python 入门学习指南</div><p class="muted">#Python #教程</p><p>从环境配置到编写第一个小项目，附练习与章节索引。</p><details><summary>▸ 查看完整说明</summary><p>包含环境配置、基础语法、文件处理和三个练习项目。适合零基础读者，建议按章节顺序学习。</p></details><div class="separation"><strong>学习指南.pdf</strong><p class="muted">资源附件 · 示例文件</p></div></div>
+      <div id="plain-preview" class="plain" hidden><strong>Python 入门学习指南</strong>
+#Python #教程
+
+从环境配置到编写第一个小项目，附练习与章节索引。
+
+包含环境配置、基础语法、文件处理和三个练习项目。适合零基础读者，建议按章节顺序学习。
+
+附件：学习指南.pdf</div>
+      <div class="actions"><button type="button" id="view-source">查看原帖</button><button type="button" id="search-content">搜索这份资料</button></div>
+    </div>
+    <p class="annotation" id="rich-note" aria-live="polite">先覆盖纯文本和单文件帖子；搜索从同一份内容生成。</p>
+  </div>
+  <div class="panel" data-panel="p3" hidden>
+    <h3>广告订单状态留在同一张卡片里</h3>
+    <div class="tools"><label for="order-scenario">模拟订单状态</label><select id="order-scenario"><option value="waiting">等待支付</option><option value="checking">正在核对</option><option value="unconfirmed">暂未确认到账</option><option value="paid">已到账</option><option value="window_ended">支付时间已到</option><option value="unavailable">查询暂不可用</option></select></div>
+    <div class="sample">
+      <div class="top"><span class="title">10 次广告发布</span><span class="state" id="order-status">待支付</span></div>
+      <p class="amount">20.00 <span>USDT</span></p>
+      <p class="muted">订单 DEMO-1042 · 网络 TRC20</p>
+      <p id="order-detail">请按订单金额支付；剩余 14:32。</p>
+      <div class="actions"><button type="button" class="primary" id="check-order">查询支付状态</button><button type="button" id="copy-amount">复制金额</button></div>
+      <div class="caption" id="order-caption">订单 DEMO-1042 · 20.00 USDT · 等待支付</div>
+      <div class="actions separation"><button type="button" id="pay-page">打开支付页</button><button type="button" id="balance">查看余额</button></div>
+    </div>
+    <p class="notice" id="order-note" aria-live="polite">生产环境仅在私聊使用；倒计时结束后仍需查询真实到账状态。</p>
+  </div>
+  <details class="foot"><summary>实施边界与依据</summary><p>方案基于 Telegram Bot API 10.3、10.4 与 10.5 的官方文档，以及 /home/TeleSubmit-v2 的现有实现，核实日期 2026-11-23。首批先交付兼容层、原生按钮、审核抢占与发布/账本幂等；后续逐项启用。</p><p>这里是浏览器交互示意，非 Telegram 客户端截图。所有角色、稿件、金额和状态均为示例。Telegram Widget 模板另行按离线沙箱和 4 KB 压缩限制实现；本预览不是待发送到 Telegram 的模板。</p></details>
+</section>
+<script>
+(function(){
+  var root=document.querySelector('.ts-plan');
+  var defaults={phase:'p0',review:'pending',viewer:'a',votes:{a:0,b:0},format:'rich',order:'waiting'};
+  var state=defaults;
+  var prior=window.tarobot&&window.tarobot.state&&window.tarobot.state.initial;
+  var phases=['p0','p1','p2','p3'],reviews=['pending','published','rejected','banned','unknown'],orders=['waiting','checking','unconfirmed','paid','window_ended','unavailable'];
+  if(prior&&typeof prior==='object'){
+    state={phase:phases.indexOf(prior.phase)>=0?prior.phase:'p0',review:reviews.indexOf(prior.review)>=0?prior.review:'pending',viewer:prior.viewer==='b'?'b':'a',votes:{a:0,b:0},format:prior.format==='plain'?'plain':'rich',order:orders.indexOf(prior.order)>=0?prior.order:'waiting'};
+    ['a','b'].forEach(function(k){var v=prior.votes&&Number(prior.votes[k]);state.votes[k]=Number.isInteger(v)&&v>=0&&v<=5?v:0;});
+  }
+  function q(s){return root.querySelector(s);}
+  function all(s){return Array.prototype.slice.call(root.querySelectorAll(s));}
+  function text(s,t){q(s).textContent=t;}
+  function hide(s,yes){if(yes){q(s).setAttribute('hidden','');}else{q(s).removeAttribute('hidden');}}
+  function disable(s,yes){if(yes){q(s).setAttribute('disabled','');}else{q(s).removeAttribute('disabled');}}
+  function save(){if(window.tarobot&&window.tarobot.state&&typeof window.tarobot.state.set==='function'){window.tarobot.state.set(state);}}
+  function choose(attr,value){all('['+attr+']').forEach(function(b){b.setAttribute('aria-pressed',String(b.getAttribute(attr)===value));});}
+  function drawReview(){
+    var labels={pending:'待审核',published:'已审核并发布',rejected:'已拒绝',banned:'已拒绝并拉黑',unknown:'发送结果待确认'};
+    var detail={pending:'AI 建议人工确认内容完整性，请选择审核结果。',published:'审核人：管理员甲。该稿件已发布，重复操作返回此结果。',rejected:'审核人：管理员甲。已通过私聊通知投稿人。',banned:'管理员甲已拒绝此稿，并禁止该投稿人再次投稿。',unknown:'发布请求已发出，但没有收到确定回执。请管理员先核对频道，避免重复发帖。'};
+    text('#review-status',labels[state.review]);text('#review-detail',detail[state.review]);
+    q('#review-status').setAttribute('class','state'+(state.review==='published'?' ok':state.review==='unknown'?' warn':''));
+    ['#approve','#reject','#ban'].forEach(function(s){disable(s,state.review!=='pending');});
+    hide('#ban-confirm',true);
+  }
+  function drawRatings(){
+    choose('data-viewer',state.viewer);
+    var count=128,sum=589;
+    ['a','b'].forEach(function(k){if(state.votes[k]){count++;sum+=state.votes[k];}});
+    text('#rating-summary','平均 '+(sum/count).toFixed(1)+' · '+count+' 人参与');
+    var v=state.votes[state.viewer];hide('#private-rating',!v);
+    text('#personal-score',v?'你已评 '+v+' 星。':'');
+    text('#rating-note',v?'当前展示用户'+(state.viewer==='a'?'甲':'乙')+'的个人反馈；公开评分按钮仍对其他人可用。':'当前用户尚未评分，个人反馈不会显示另一用户的记录。');
+  }
+  function drawOrder(){
+    var names={waiting:'待支付',checking:'正在核对',unconfirmed:'暂未确认',paid:'已到账',window_ended:'请先核对',unavailable:'查询暂不可用'};
+    var detail={waiting:'请按订单金额支付；剩余 14:32。',checking:'正在查询支付状态，请稍候。',unconfirmed:'暂未确认到账，可能仍在链上确认。请稍后再查。',paid:'已到账，已增加 10 次广告发布额度。',window_ended:'支付时间已到，请先查询状态。倒计时不代表支付失败。',unavailable:'本次查询未完成。已有订单状态保留，请稍后重试。'};
+    q('#order-scenario').value=state.order;text('#order-status',names[state.order]);text('#order-detail',detail[state.order]);
+    text('#order-caption','订单 DEMO-1042 · 20.00 USDT · '+names[state.order]);
+    q('#order-status').setAttribute('class','state'+(state.order==='paid'?' ok':['window_ended','unavailable'].indexOf(state.order)>=0?' warn':''));
+    disable('#check-order',state.order==='paid'||state.order==='checking');
+    text('#check-order',state.order==='paid'?'已完成入账':state.order==='checking'?'正在核对…':'查询支付状态');
+    disable('#pay-page',state.order==='paid'||state.order==='window_ended');
+  }
+  function draw(){
+    choose('data-phase',state.phase);
+    all('[data-panel]').forEach(function(p){if(p.getAttribute('data-panel')===state.phase){p.removeAttribute('hidden');}else{p.setAttribute('hidden','');}});
+    drawReview();drawRatings();choose('data-format',state.format);hide('#rich-preview',state.format==='plain');hide('#plain-preview',state.format!=='plain');drawOrder();
+  }
+  function on(s,f){q(s).addEventListener('click',f);}
+  all('[data-phase]').forEach(function(b){b.addEventListener('click',function(){state.phase=b.getAttribute('data-phase');save();draw();});});
+  on('#approve',function(){state.review='published';save();drawReview();text('#review-note','示例发布操作已完成。可模拟另一管理员再次点击，查看重复处理反馈。');});
+  on('#reject',function(){state.review='rejected';save();drawReview();text('#review-note','拒绝结果已记录，原稿内容仍可用于审核记录查询。');});
+  on('#ban',function(){hide('#ban-confirm',false);});
+  on('#ban-no',function(){hide('#ban-confirm',true);});
+  on('#ban-yes',function(){state.review='banned';save();drawReview();text('#review-note','示例：拒绝与拉黑已完成；真实流程中副作用失败需单独提示。');});
+  on('#repeat',function(){if(state.review==='pending'){text('#review-note','请先选择一个审核结果，再模拟另一管理员的重复操作。');}else{text('#review-note',state.review==='published'?'另一管理员收到“该投稿已由管理员甲处理”。发布操作仍只有一次。':state.review==='unknown'?'该操作仍待核对，重复点击不会再次发送。':'该稿件已有审核结果，不执行新的发布。');}});
+  on('#timeout',function(){state.review='unknown';save();drawReview();text('#review-note','超时不等于未发送。先核对频道，再由管理员确认已发送或未发送。');});
+  on('#reset-review',function(){state.review='pending';save();drawReview();text('#review-note','按钮禁用负责反馈；后台唯一操作记录负责阻止重复发布。');});
+  all('[data-viewer]').forEach(function(b){b.addEventListener('click',function(){state.viewer=b.getAttribute('data-viewer');save();drawRatings();});});
+  all('[data-score]').forEach(function(b){b.addEventListener('click',function(){state.votes[state.viewer]=Number(b.getAttribute('data-score'));save();drawRatings();});});
+  all('[data-format]').forEach(function(b){b.addEventListener('click',function(){state.format=b.getAttribute('data-format');save();choose('data-format',state.format);hide('#rich-preview',state.format==='plain');hide('#plain-preview',state.format!=='plain');});});
+  on('#view-source',function(){text('#rich-note','示例：查看原帖会打开这份资源的频道链接；此预览不进行跳转。');});
+  on('#search-content',function(){text('#rich-note','示例搜索可命中标题、折叠正文中的“文件处理”和文件名“学习指南.pdf”。');});
+  q('#order-scenario').addEventListener('change',function(){state.order=q('#order-scenario').value;save();drawOrder();text('#order-note',state.order==='paid'?'入账以后台确认结果为准，卡片和普通说明同步更新。':'生产环境仅在私聊使用；倒计时结束后仍需查询真实到账状态。');});
+  on('#check-order',function(){state.order='checking';save();drawOrder();text('#order-note','预览进入核对状态。可用上方状态选择器查看已到账、未确认或查询失败分支。');});
+  on('#copy-amount',function(){text('#order-note','复制行为示意：应付金额为 20.00 USDT；本预览未修改剪贴板。');});
+  on('#pay-page',function(){text('#order-note','示例：原生按钮打开既有支付页，付款由现有 UPAY 流程核对。');});
+  on('#balance',function(){text('#order-note','示例账户余额：'+(state.order==='paid'?12:2)+' 次广告发布额度。');});
+  draw();
+})();
+</script>
+<!-- preview-fragment-end -->
+</body>
+</html>

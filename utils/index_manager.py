@@ -15,6 +15,7 @@ from whoosh.writing import CLEAR
 
 from config.settings import DB_PATH
 from utils.search_engine import get_search_engine, PostDocument
+from utils.content_normalizer import search_description
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,7 @@ class IndexManager:
             
             cursor = await conn.execute('''
                 SELECT message_id, user_id, username, title, tags, link, 
-                       filename, caption, publish_time, views, heat_score
+                       filename, caption, source_content_json, publish_time, views, heat_score
                 FROM published_posts
                 ORDER BY message_id
             ''')
@@ -101,7 +102,7 @@ class IndexManager:
                         user_id=post['user_id'] or 0,
                         username=post['username'] or '',
                         title=post['title'] or '',
-                        description=post['caption'] or '',  # 使用 caption 作为描述
+                        description=search_description(post['source_content_json'], post['caption']),
                         tags=post['tags'] or '',
                         filename=post['filename'] or '',  # 文件名
                         link=post['link'] or '',
@@ -184,7 +185,7 @@ class IndexManager:
                     try:
                         cursor = await conn.execute('''
                             SELECT message_id, user_id, username, title, tags, link, 
-                                   filename, caption, publish_time, views, heat_score
+                                   filename, caption, source_content_json, publish_time, views, heat_score
                             FROM published_posts
                             WHERE message_id = ?
                         ''', (int(message_id),))
@@ -199,7 +200,7 @@ class IndexManager:
                                 user_id=post['user_id'] or 0,
                                 username=post['username'] or '',
                                 title=post['title'] or '',
-                                description=post['caption'] or '',
+                                description=search_description(post['source_content_json'], post['caption']),
                                 tags=post['tags'] or '',
                                 filename=post['filename'] or '',
                                 link=post['link'] or '',

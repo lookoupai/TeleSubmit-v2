@@ -14,6 +14,7 @@ from datetime import datetime
 from database.db_manager import get_db
 from utils.search_engine import init_search_engine, PostDocument, get_search_engine
 from utils.logging_config import setup_logging
+from utils.content_normalizer import search_description
 
 # 设置日志
 setup_logging()
@@ -67,7 +68,10 @@ async def migrate_posts(clear_index: bool = False):
                 post_doc = PostDocument(
                     message_id=post['message_id'],
                     title=post['title'] or '',
-                    description=post['note'] or '',  # 使用 note 作为描述
+                    description=search_description(
+                        post['source_content_json'] if 'source_content_json' in post.keys() else None,
+                        post['note'],
+                    ),
                     tags=post['tags'] or '',
                     filename=filename,  # 文件名字段
                     link=post['link'] or '',

@@ -30,6 +30,8 @@ from handlers.review_handlers import perform_review, save_fingerprint_after_publ
 from utils.rating_service import get_rating_service
 from utils.paid_ad_service import reserve_one_credit, refund_one_credit
 from utils import runtime_settings
+from utils.operation_service import claim_operation, get_operation, set_operation_state
+from utils.publish_service import publication_scope
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +65,7 @@ async def save_published_post(
     rating_avg=None,
     rating_votes=None,
     show_submitter=None,
+    rich_content=None,
 ):
     """
     保存已发布的帖子信息到数据库和搜索索引
@@ -132,6 +135,10 @@ async def save_published_post(
         rating_votes = int(rating_votes) if rating_votes is not None else 0
 
         # 保存到数据库并获取 post_id
+        from utils.content_normalizer import search_description
+        from ui.rich_messages import TEMPLATE_VERSION
+
+        source_json = rich_content.source().source_json() if rich_content else None
         post_id = None
         async with get_db() as conn:
             cursor = await conn.cursor()
@@ -140,8 +147,20 @@ async def save_published_post(
                 (message_id, user_id, username, title, tags, link, note,
                  content_type, file_ids, caption, filename, publish_time,
                  last_update, related_message_ids, text_content,
-                 rating_subject_id, rating_avg, rating_votes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 rating_subject_id, rating_avg, rating_votes, source_content_json, renderer, template_version)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(message_id) DO UPDATE SET
+                    user_id=excluded.user_id, username=excluded.username, title=excluded.title,
+                    tags=excluded.tags, link=excluded.link, note=excluded.note, caption=excluded.caption,
+                    content_type=excluded.content_type, file_ids=excluded.file_ids, filename=excluded.filename,
+                    related_message_ids=excluded.related_message_ids, text_content=excluded.text_content,
+                    rating_subject_id=COALESCE(excluded.rating_subject_id, published_posts.rating_subject_id),
+                    rating_avg=CASE WHEN excluded.rating_subject_id IS NOT NULL THEN excluded.rating_avg ELSE published_posts.rating_avg END,
+                    rating_votes=CASE WHEN excluded.rating_subject_id IS NOT NULL THEN excluded.rating_votes ELSE published_posts.rating_votes END,
+                    source_content_json=COALESCE(excluded.source_content_json, published_posts.source_content_json),
+                    renderer=COALESCE(excluded.renderer, published_posts.renderer),
+                    template_version=COALESCE(excluded.template_version, published_posts.template_version)
+                WHERE excluded.renderer = 'rich'
             """, (
                 message_id,
                 user_id,
@@ -161,8 +180,15 @@ async def save_published_post(
                 rating_subject_id,
                 rating_avg,
                 rating_votes,
+                source_json,
+                "rich" if rich_content else None,
+                TEMPLATE_VERSION if rich_content else None,
             ))
-            post_id = cursor.lastrowid  # 获取插入的行ID
+            stored = await (await conn.execute(
+                "SELECT source_content_json FROM published_posts WHERE message_id=?", (message_id,)
+            )).fetchone()
+            source_json = stored[0] if stored else source_json
+            post_id = message_id  # message_id is the INTEGER PRIMARY KEY (rowid)
             await conn.commit()
             logger.info(f"已保存帖子 {message_id} (post_id: {post_id}) 到published_posts表（内容类型: {content_type}）")
         
@@ -176,7 +202,7 @@ async def save_published_post(
                 message_id=message_id,
                 post_id=post_id,  # 传入数据库ID
                 title=title,
-                description=note,  # 使用note作为描述
+                description=search_description(source_json, "\n".join(v for v in (note, text_content) if v)),
                 tags=tags,
                 filename=filename,  # 文件名
                 link=link,
@@ -193,12 +219,168 @@ async def save_published_post(
             
         except Exception as e:
             logger.error(f"添加到搜索索引失败: {e}", exc_info=True)
-            # 继续执行，不影响发布流程
-            
+            return False
+
+        return True
     except Exception as e:
         logger.error(f"保存帖子信息到数据库失败: {e}")
+        return False
 
-async def publish_submission(update: Update, context: CallbackContext) -> int:
+async def repair_publication_record(operation_id):
+    """Rebuild metadata and index from an attested receipt without sending anything."""
+    operation = await get_operation(operation_id)
+    if not operation or operation["state"] != "succeeded":
+        return False
+    ids = json.loads(operation["result_json"]).get("message_ids", [])
+    if not ids:
+        return False
+    payload = json.loads(operation["payload_json"])
+    data = {
+        "title": "",
+        "note": "",
+        "tags": "",
+        "link": "",
+        "username": str(operation["owner_user_id"]),
+        **payload.get("submission", payload),
+    }
+    media = json.loads(data.get("image_id") or "[]")
+    docs = json.loads(data.get("document_id") or "[]")
+    settings = payload.get("settings", data.get("_settings", {}))
+    rich_content = None
+    if json.loads(operation["result_json"]).get("renderer") == "rich":
+        from ui.rich_messages import PostContent
+        rich_content = PostContent.from_submission(
+            data, docs, show_submitter=settings.get("show_submitter", True),
+            prefix=payload.get("publication_prefix", ""),
+        )
+    return await save_published_post(
+        operation["owner_user_id"],
+        ids[0],
+        data,
+        media,
+        docs,
+        ids,
+        data.get("text_content"),
+        show_submitter=settings.get("show_submitter", True),
+        rich_content=rich_content,
+    )
+
+
+async def show_submission_confirmation(update, context):
+    from ui.keyboards import Keyboards
+
+    user_id = update.effective_user.id
+    async with get_db() as conn:
+        row = await (
+            await conn.execute("SELECT * FROM submissions WHERE user_id=?", (user_id,))
+        ).fetchone()
+    if not row:
+        await context.bot.send_message(
+            chat_id=user_id, text="投稿会话已结束，请重新发送 /submit。"
+        )
+        return ConversationHandler.END
+    text = row["text_content"] or row["title"] or row["note"] or "媒体/文档投稿"
+    await context.bot.send_message(
+        chat_id=user_id,
+        text="请确认本次投稿：\n\n" + text[:3000],
+        reply_markup=Keyboards.submission_confirm(row["session_id"], row["revision"]),
+    )
+    return 13
+
+
+async def publish_submission(update, context):
+    user_id = update.effective_user.id
+    async with get_db() as conn:
+        row = await (
+            await conn.execute("SELECT * FROM submissions WHERE user_id=?", (user_id,))
+        ).fetchone()
+    if not row:
+        await context.bot.send_message(
+            chat_id=user_id, text="投稿会话已结束，请重新发送 /submit。"
+        )
+        return ConversationHandler.END
+    data = dict(row)
+    query = getattr(update, "callback_query", None)
+    if (
+        query
+        and query.data != f"submit_confirm_{data['session_id']}_{data['revision']}"
+    ):
+        await query.answer("该预览已失效，请重新确认当前投稿。", show_alert=True)
+        return 13
+    payload = {
+        "submission": data,
+        "settings": get_snapshot(context),
+        "paid_ad": bool(context.user_data.get("paid_ad")),
+        "_destination": CHANNEL_ID,
+    }
+    operation = await claim_operation(
+        f"submit:{data['session_id']}:{data['revision']}:{CHANNEL_ID}", user_id, payload
+    )
+    if not operation:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="本次投稿已有处理记录，请勿重复发布。管理员可查询处理结果。",
+        )
+        return ConversationHandler.END
+    operation_id = operation["id"]
+    context.user_data.pop("pending_review_id", None)
+    try:
+        if query:
+            try:
+                await query.answer("正在处理投稿")
+                await query.edit_message_text("正在审核并发布，请稍候。")
+            except Exception:
+                pass
+        async with publication_scope(operation_id):
+            await _publish_submission_impl(
+                update,
+                context,
+                data,
+                operation_id,
+                settings=payload["settings"],
+                paid_ad=payload["paid_ad"],
+            )
+        current = await get_operation(operation_id)
+        if current["state"] == "processing":
+            await set_operation_state(operation_id, "failed")
+    except Exception as exc:
+        current = await get_operation(operation_id)
+        if current["state"] == "processing":
+            await set_operation_state(
+                operation_id, "failed", error_code=type(exc).__name__
+            )
+        elif current["state"] == "sending":
+            await set_operation_state(
+                operation_id, "partial", error_code=type(exc).__name__
+            )
+        current = await get_operation(operation_id)
+        message = (
+            "内容已发送，后续处理暂未完成，请联系管理员。"
+            if current["state"] == "succeeded"
+            else (
+                "发送结果尚待核对，请勿重新投稿。"
+                if current["state"] in ("unknown", "partial")
+                else "本次发布未完成，请联系管理员处理。"
+            )
+        )
+        await context.bot.send_message(
+            chat_id=user_id, text=f"{message}\n处理编号：{operation_id}"
+        )
+        logger.error("投稿操作 %s 中断: %s", operation_id, type(exc).__name__)
+    finally:
+        current = await get_operation(operation_id)
+        if current["state"] == "failed":
+            await refund_one_credit(user_id, operation_id=operation_id)
+        if current["state"] in ("succeeded", "review_pending", "rejected"):
+            async with get_db() as conn:
+                await conn.execute(
+                    "DELETE FROM submissions WHERE user_id=? AND session_id=? AND revision=?",
+                    (user_id, data["session_id"], data["revision"]),
+                )
+    return ConversationHandler.END
+
+
+async def _publish_submission_impl(update: Update, context: CallbackContext, data, operation_id, *, settings=None, paid_ad=None) -> int:
     """
     发布投稿到频道
     
@@ -216,20 +398,12 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
         int: 会话结束状态
     """
     user_id = update.effective_user.id
-    snapshot = get_snapshot(context)
+    reply_text = lambda text, **kwargs: context.bot.send_message(chat_id=user_id, text=text, **kwargs)
+    snapshot = settings if settings is not None else get_snapshot(context)
     show_submitter = bool(snapshot.get("show_submitter", runtime_settings.bot_show_submitter()))
     notify_owner = bool(snapshot.get("notify_owner", runtime_settings.bot_notify_owner()))
     rating_enabled = bool(snapshot.get("rating_enabled", runtime_settings.rating_enabled()))
     try:
-        async with get_db() as conn:
-            c = await conn.cursor()
-            await c.execute("SELECT * FROM submissions WHERE user_id=?", (user_id,))
-            data = await c.fetchone()
-        
-        if not data:
-            await update.message.reply_text("❌ 数据异常，请重新发送 /start")
-            return ConversationHandler.END
-
         caption = build_caption(data, show_submitter=show_submitter)
         
         # 解析媒体和文档数据，增强型错误处理
@@ -254,13 +428,14 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
         text_content = data["text_content"] if "text_content" in data.keys() and data["text_content"] else None
 
         if not media_list and not doc_list and not text_content:
-            await update.message.reply_text("❌ 未检测到任何上传文件或文本内容，请重新发送 /start")
+            await reply_text("❌ 未检测到任何上传文件或文本内容，请重新发送 /start")
             return ConversationHandler.END
 
-        is_paid_ad = bool(context.user_data.get("paid_ad")) and runtime_settings.paid_ad_enabled()
+        is_paid_ad = (bool(context.user_data.get("paid_ad")) if paid_ad is None else paid_ad) and runtime_settings.paid_ad_enabled()
+        billing_id = context.user_data.get("billing_operation_id", operation_id)
 
         # === 审核流程：重复检测和 AI 审核 ===
-        if runtime_settings.duplicate_check_enabled() or runtime_settings.ai_review_enabled():
+        if not context.user_data.get("publication_review_completed") and (runtime_settings.duplicate_check_enabled() or runtime_settings.ai_review_enabled()):
             # 构建投稿数据用于审核（同时保存完整发布所需字段，供人工审核通过后发布）
             submission_data = {
                 'text_content': text_content,
@@ -293,8 +468,10 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
             }
 
             # 执行审核（包含重复检测和 AI 审核）
+            from types import SimpleNamespace
+            review_update = SimpleNamespace(effective_user=update.effective_user, message=SimpleNamespace(reply_text=reply_text))
             is_approved, should_continue, review_message = await perform_review(
-                update,
+                review_update,
                 context,
                 submission_data,
                 user_info,
@@ -302,18 +479,25 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
             )
 
             if not should_continue:
+                await set_operation_state(operation_id, "review_pending" if context.user_data.pop("pending_review_id", None) else "rejected")
                 # 审核未通过，终止发布流程
                 logger.info(f"投稿审核未通过: user_id={user_id}, message={review_message}")
                 # 清理用户会话数据
                 try:
                     async with get_db() as conn:
                         c = await conn.cursor()
-                        await c.execute("DELETE FROM submissions WHERE user_id=?", (user_id,))
+                        await c.execute("DELETE FROM submissions WHERE user_id=? AND session_id=? AND revision=?", (user_id,data["session_id"],data["revision"]))
                         await conn.commit()
                     logger.info(f"已删除用户 {user_id} 的投稿记录")
                 except Exception as e:
                     logger.error(f"清理投稿数据失败: {e}")
                 return ConversationHandler.END
+
+        async with get_db() as conn:
+            current=await (await conn.execute("SELECT payload_json FROM bot_operations WHERE id=?",(operation_id,))).fetchone()
+            saved_payload=json.loads(current[0])
+            saved_payload["review_completed"]=True
+            await conn.execute("UPDATE bot_operations SET payload_json=? WHERE id=?",(json.dumps(saved_payload,ensure_ascii=False),operation_id))
 
         # 安全处理spoiler字段，防止None值导致AttributeError
         spoiler_value = data["spoiler"] if "spoiler" in data.keys() and data["spoiler"] else "false"
@@ -321,10 +505,10 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
 
         # 付费广告：预扣 1 次，失败则退回
         if is_paid_ad:
-            reserved = await reserve_one_credit(user_id)
+            reserved = await reserve_one_credit(user_id, operation_id=billing_id)
             if not reserved:
                 context.user_data.pop("paid_ad", None)
-                await update.message.reply_text(
+                await reply_text(
                     "❌ 广告发布次数不足，请先购买。\n\n"
                     "点击“购买广告次数”选择套餐，或使用 /ad_balance 查看余额。",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("购买广告次数", callback_data="paid_ad_buy_menu")]]),
@@ -353,8 +537,23 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
         if is_paid_ad and not (text_content and not media_list and not doc_list):
             caption_for_media = f"{ad_prefix}\n\n{caption}" if caption else ad_prefix
 
+        from handlers.rich_content import add_post_view_button, send_resource, source_for_publication
+        rich_content = source_for_publication(
+            context, snapshot, data, media_list, doc_list, spoiler_flag,
+            show_submitter=show_submitter, prefix=ad_prefix,
+        )
+        if rich_content:
+            async with get_db() as conn:
+                await conn.execute(
+                    "UPDATE bot_operations SET payload_json=json_set(payload_json, '$.publication_prefix', ?) WHERE id=?",
+                    (ad_prefix, operation_id),
+                )
+            sent_message = await send_resource(context, rich_content)
+            all_message_ids.append(sent_message.message_id)
+            if getattr(sent_message, "renderer", None) != "rich":
+                rich_content = None
         # 处理纯文本投稿
-        if text_content and not media_list and not doc_list:
+        elif text_content and not media_list and not doc_list:
             sent_message = await handle_text_publish(context, text_content, caption, spoiler_flag, prefix=ad_prefix)
             if sent_message:
                 all_message_ids.append(sent_message.message_id)
@@ -363,7 +562,7 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
             sent_message, all_message_ids = await handle_media_publish(context, media_list, caption_for_media, spoiler_flag)
         
         # 处理文档文件
-        if doc_list:
+        if doc_list and (not sent_message or media_list):
             if sent_message:
                 # 如果已经发送了媒体，则文档作为回复
                 doc_msg = await handle_document_publish(
@@ -383,11 +582,15 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
         # 处理结果
         if not sent_message:
             if is_paid_ad:
-                await refund_one_credit(user_id)
+                await refund_one_credit(user_id, operation_id=operation_id)
                 context.user_data.pop("paid_ad", None)
-            await update.message.reply_text("❌ 内容发送失败，请稍后再试")
+            await reply_text("❌ 内容发送失败，请稍后再试")
             return ConversationHandler.END
             
+        operation = await get_operation(operation_id)
+        all_message_ids = json.loads(operation["result_json"]).get("message_ids", all_message_ids)
+        await set_operation_state(operation_id, "succeeded")
+
         # 生成投稿链接
         if CHANNEL_ID.startswith('@'):
             channel_username = CHANNEL_ID.lstrip('@')
@@ -395,16 +598,19 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
         else:
             submission_link = "频道无公开链接"
 
-        if is_paid_ad:
-            context.user_data.pop("paid_ad", None)
-            await update.message.reply_text(
-                f"✅ 广告已成功发布到频道（已扣减 1 次）\n点击以下链接查看：\n{submission_link}"
-            )
-        else:
-            await update.message.reply_text(
-                f"🎉 投稿已成功发布到频道！\n点击以下链接查看投稿：\n{submission_link}"
-            )
-        
+        try:
+            if is_paid_ad:
+                context.user_data.pop("paid_ad", None)
+                await reply_text(
+                    f"✅ 广告已成功发布到频道（已扣减 1 次）\n点击以下链接查看：\n{submission_link}"
+                )
+            else:
+                await reply_text(
+                    f"🎉 投稿已成功发布到频道！\n点击以下链接查看投稿：\n{submission_link}"
+                )
+        except Exception as exc:
+            logger.warning("发布回执通知未送达: %s", type(exc).__name__)
+
         # 保存已发布的帖子信息到数据库（用于热度统计和搜索）
         rating_subject_id = None
         rating_avg = None
@@ -426,10 +632,15 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
             rating_avg=rating_avg,
             rating_votes=rating_votes,
             show_submitter=show_submitter,
+            rich_content=rich_content,
         )
 
         # 为频道消息附加评分键盘
-        if rating_enabled and rating_subject_info and rating_subject_id is not None:
+        if rich_content:
+            from ui.keyboards import Keyboards
+            markup = Keyboards.rating_keyboard(rating_subject_id, rating_avg, rating_votes) if rating_subject_id is not None else None
+            await add_post_view_button(context, sent_message.message_id, markup)
+        elif rating_enabled and rating_subject_info and rating_subject_id is not None:
             try:
                 rating_service = get_rating_service()
                 await rating_service.attach_rating_keyboard(
@@ -553,7 +764,7 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
                     except Exception as e2:
                         logger.error(f"发送简化通知也失败: {e2}")
                         # 通知用户有问题
-                        await update.message.reply_text(
+                        await reply_text(
                             "⚠️ 投稿已发布，但无法通知管理员。请直接联系管理员。"
                         )
             except Exception as e:
@@ -562,358 +773,150 @@ async def publish_submission(update: Update, context: CallbackContext) -> int:
         else:
             logger.info(f"不发送通知: notify_owner={notify_owner}, OWNER_ID={OWNER_ID}")
         
-    except Exception as e:
-        logger.error(f"发布投稿失败: {e}")
-        await update.message.reply_text(f"❌ 发布失败，请联系管理员。错误信息：{str(e)}")
-    finally:
-        # 清理用户会话数据
-        try:
-            async with get_db() as conn:
-                c = await conn.cursor()
-                await c.execute("DELETE FROM submissions WHERE user_id=?", (user_id,))
-            logger.info(f"已删除用户 {user_id} 的投稿记录")
-        except Exception as e:
-            logger.error(f"删除数据错误: {e}")
-        
-        # 清理过期数据
-        await cleanup_old_data()
-    
+    except Exception:
+        raise
     return ConversationHandler.END
 
 async def handle_media_publish(context, media_list, caption, spoiler_flag):
-    """
-    处理媒体发布
-    
-    Args:
-        context: 回调上下文
-        media_list: 媒体列表
-        caption: 说明文本
-        spoiler_flag: 是否剧透标志
-        
-    Returns:
-        tuple: (主消息对象, 所有消息ID列表) 或 (None, [])
-    """
-    # 检查caption长度，如果过长先单独发送
-    caption_message = None
-    
-    # 强制检查caption长度，保证媒体组发送的可靠性
-    # 不管SHOW_SUBMITTER如何设置，当caption超过850字符时都单独发送
-    # 使用较小的阈值（850而不是1000）来确保足够的安全边际
+    """Send deterministic groups; record every receipt and stop at the first failure."""
+    from utils.publish_service import send_part
+
+    all_ids = []
+    first = None
     if caption and len(caption) > 850:
-        logger.info(f"Caption过长 ({len(caption)} 字符)，单独发送caption")
-        try:
-            caption_message = await safe_send(
-                context.bot.send_message,
-                chat_id=CHANNEL_ID,
-                text=caption,
-                parse_mode='HTML'
-            )
-            # 媒体组将不再包含caption
-            caption = None
-        except Exception as e:
-            logger.error(f"发送长caption失败: {e}")
-            # 继续尝试发送媒体，但不带caption
-
-    # 单个媒体处理
-    if len(media_list) == 1:
-        typ, file_id = media_list[0].split(":", 1)
-        try:
-            # 如果已经单独发送了caption，则不再添加到媒体
-            media_caption = None if caption_message else caption
-            
-            if typ == "photo":
-                sent_message = await safe_send(
-                    context.bot.send_photo,
-                    chat_id=CHANNEL_ID,
-                    photo=file_id,
-                    caption=media_caption,
-                    parse_mode='HTML' if media_caption else None,
-                    has_spoiler=spoiler_flag,
-                    reply_to_message_id=caption_message.message_id if caption_message else None
-                )
-            elif typ == "video":
-                sent_message = await safe_send(
-                    context.bot.send_video,
-                    chat_id=CHANNEL_ID,
-                    video=file_id,
-                    caption=media_caption,
-                    parse_mode='HTML' if media_caption else None,
-                    has_spoiler=spoiler_flag,
-                    reply_to_message_id=caption_message.message_id if caption_message else None
-                )
-            elif typ == "animation":
-                sent_message = await safe_send(
-                    context.bot.send_animation,
-                    chat_id=CHANNEL_ID,
-                    animation=file_id,
-                    caption=media_caption,
-                    parse_mode='HTML' if media_caption else None,
-                    has_spoiler=spoiler_flag,
-                    reply_to_message_id=caption_message.message_id if caption_message else None
-                )
-            elif typ == "audio":
-                sent_message = await safe_send(
-                    context.bot.send_audio,
-                    chat_id=CHANNEL_ID,
-                    audio=file_id,
-                    caption=media_caption,
-                    parse_mode='HTML' if media_caption else None,
-                    reply_to_message_id=caption_message.message_id if caption_message else None
-                )
-            
-            # 收集所有消息ID
-            main_msg = caption_message or sent_message
-            all_ids = []
-            if caption_message:
-                all_ids.append(caption_message.message_id)
-            if sent_message:
-                all_ids.append(sent_message.message_id)
-            return (main_msg, all_ids)
-        except Exception as e:
-            logger.error(f"发送单条媒体失败: {e}")
-            if caption_message:
-                return (caption_message, [caption_message.message_id])
-            return (None, [])
-    
-    # 多个媒体处理 - 将媒体分组，每组最多10个
-    else:
-        try:
-            all_sent_messages = []
-            success_groups = 0
-            total_groups = (len(media_list) + 9) // 10  # 向上取整计算总组数
-            first_message = caption_message  # 如果单独发送了caption，用它作为第一条消息
-            
-            # 将媒体列表分成每组最多10个项目
-            for chunk_index in range(0, len(media_list), 10):
-                media_chunk = media_list[chunk_index:chunk_index + 10]
-                media_group = []
-                
-                group_number = chunk_index // 10 + 1
-                logger.info(f"处理第{group_number}组媒体，共{len(media_chunk)}个项目 (总共{total_groups}组)")
-                
-                for i, m in enumerate(media_chunk):
-                    typ, file_id = m.split(":", 1)
-                    # 只在第一组的第一个媒体添加说明（如果caption不为None且没有单独发送）
-                    # 强制设置简短的caption，即使SHOW_SUBMITTER=True也能可靠发送
-                    use_caption = caption if (chunk_index == 0 and i == 0 and caption is not None and not caption_message) else None
-                    use_parse_mode = 'HTML' if use_caption else None
-                    
-                    if typ == "photo":
-                        media_group.append(InputMediaPhoto(
-                            media=file_id,
-                            caption=use_caption,
-                            parse_mode=use_parse_mode,
-                            has_spoiler=spoiler_flag
-                        ))
-                    elif typ == "video":
-                        media_group.append(InputMediaVideo(
-                            media=file_id,
-                            caption=use_caption,
-                            parse_mode=use_parse_mode,
-                            has_spoiler=spoiler_flag
-                        ))
-                    elif typ == "animation":
-                        media_group.append(InputMediaAnimation(
-                            media=file_id,
-                            caption=use_caption,
-                            parse_mode=use_parse_mode,
-                            has_spoiler=spoiler_flag
-                        ))
-                    elif typ == "audio":
-                        media_group.append(InputMediaAudio(
-                            media=file_id,
-                            caption=use_caption,
-                            parse_mode=use_parse_mode
-                        ))
-                
-                # 发送当前组，增加超时参数
-                extended_timeout = 60  # 更长的超时时间，避免误判为超时
-                if first_message is None:
-                    logger.info(f"发送第{group_number}组媒体（首组），{len(media_group)}个媒体项目")
-                    # 第一组直接发送
-                    try:
-                        sent_messages = await asyncio.wait_for(
-                            context.bot.send_media_group(
-                                chat_id=CHANNEL_ID,
-                                media=media_group
-                            ),
-                            timeout=extended_timeout
-                        )
-                        
-                        if sent_messages and len(sent_messages) > 0:
-                            all_sent_messages.extend(sent_messages)
-                            first_message = sent_messages[0]  # 保存第一条消息，用于回复
-                            logger.info(f"第{group_number}组媒体发送成功，message_id={first_message.message_id}")
-                            success_groups += 1
-                        else:
-                            logger.error(f"第{group_number}组媒体发送返回空结果")
-                    except asyncio.TimeoutError:
-                        logger.warning(f"第{group_number}组媒体发送超时，但可能已成功发送")
-                        # 即使超时，尝试继续后续组的发送
-                        # 等待3秒，让Telegram服务器有时间处理
-                        await asyncio.sleep(3)
-                    except Exception as e:
-                        logger.error(f"第{group_number}组媒体发送失败: {e}")
-                        
-                        # 如果是网络相关错误，休眠更长时间后继续
-                        if any(keyword in str(e).lower() for keyword in ["network", "connection", "timeout"]):
-                            await asyncio.sleep(5)
-                else:
-                    logger.info(f"发送第{group_number}组媒体（回复组），{len(media_group)}个媒体项目，回复到message_id={first_message.message_id}")
-                    # 后续组作为回复发送到第一条消息
-                    try:
-                        sent_messages = await asyncio.wait_for(
-                            context.bot.send_media_group(
-                                chat_id=CHANNEL_ID,
-                                media=media_group,
-                                reply_to_message_id=first_message.message_id
-                            ),
-                            timeout=extended_timeout
-                        )
-                        
-                        if sent_messages and len(sent_messages) > 0:
-                            all_sent_messages.extend(sent_messages)
-                            logger.info(f"第{group_number}组媒体发送成功，第一条message_id={sent_messages[0].message_id}")
-                            success_groups += 1
-                        else:
-                            logger.error(f"第{group_number}组媒体发送返回空结果")
-                    except asyncio.TimeoutError:
-                        logger.warning(f"第{group_number}组媒体发送超时，但可能已成功发送")
-                        # 即使超时，尝试继续后续组的发送
-                        # 等待3秒，让Telegram服务器有时间处理
-                        await asyncio.sleep(3)
-                    except Exception as e:
-                        logger.error(f"第{group_number}组媒体发送失败: {e}")
-                        
-                        # 如果是网络相关错误，休眠更长时间后继续
-                        if any(keyword in str(e).lower() for keyword in ["network", "connection", "timeout"]):
-                            await asyncio.sleep(5)
-                
-                # 添加更长的延迟，避免API限制
-                # 每组之间等待2秒，给Telegram API更多处理时间
-                await asyncio.sleep(2)
-            
-            # 计算实际处理的媒体数量并记录结果
-            total_media_estimate = success_groups * 10
-            if success_groups < total_groups and len(all_sent_messages) == 0:
-                logger.warning(f"媒体发送部分超时，预计已发送约{total_media_estimate}个媒体项目（可能不准确）")
-            else:
-                logger.info(f"所有媒体发送完成，{success_groups}/{total_groups}组成功，共{len(all_sent_messages)}个媒体项目成功记录")
-            
-            # 收集所有消息ID
-            all_message_ids = []
-            if caption_message:
-                all_message_ids.append(caption_message.message_id)
-            all_message_ids.extend([msg.message_id for msg in all_sent_messages])
-            
-            # 返回主消息和所有消息ID
-            main_msg = first_message if first_message else (all_sent_messages[0] if all_sent_messages else None)
-            return (main_msg, all_message_ids)
-        except Exception as e:
-            logger.error(f"发送媒体组失败: {e}")
-            if caption_message:
-                return (caption_message, [caption_message.message_id])
-            return (None, [])
-
-async def handle_text_publish(context, text_content, caption, spoiler_flag, prefix: str = ""):
-    """
-    处理纯文本投稿发布
-
-    Args:
-        context: 回调上下文
-        text_content: 纯文本投稿内容
-        caption: 额外说明（标签、链接等）
-        spoiler_flag: 是否标记为剧透
-
-    Returns:
-        发送的消息对象或None
-    """
-    try:
-        # 组合完整的消息内容
-        # 纯文本模式：text_content 是正文，caption 包含标签等元信息
-        if caption:
-            # 在剧透模式下，将正文用剧透标签包裹
-            if spoiler_flag:
-                full_text = f"<tg-spoiler>{text_content}</tg-spoiler>\n\n{caption}"
-            else:
-                full_text = f"{text_content}\n\n{caption}"
-        else:
-            if spoiler_flag:
-                full_text = f"<tg-spoiler>{text_content}</tg-spoiler>"
-            else:
-                full_text = text_content
-
-        if prefix:
-            full_text = f"{prefix}\n\n{full_text}"
-
-        sent_message = await safe_send(
+        first = await send_part(
             context.bot.send_message,
             chat_id=CHANNEL_ID,
-            text=full_text,
-            parse_mode='HTML'
+            text=caption,
+            parse_mode="HTML",
         )
-        logger.info(f"纯文本投稿发送成功，message_id={sent_message.message_id}")
-        return sent_message
-    except Exception as e:
-        logger.error(f"发送纯文本投稿失败: {e}")
-        return None
-
-
-async def handle_document_publish(context, doc_list, caption=None, reply_to_message_id=None):
-    """
-    处理文档发布
-    
-    Args:
-        context: 回调上下文
-        doc_list: 文档列表
-        caption: 说明文本，如果为None则不添加说明
-        reply_to_message_id: 回复的消息ID，如果为None则创建新消息
-        
-    Returns:
-        发送的消息对象或None
-    """
-    if len(doc_list) == 1 and caption is not None:
-        # 单个文档处理
-        parts = doc_list[0].split(":", 2)
-        file_id = parts[1] if len(parts) >= 2 else parts[0]
-        try:
-            return await safe_send(
-                context.bot.send_document,
-                chat_id=CHANNEL_ID,
-                document=file_id,
-                caption=caption,
-                parse_mode='HTML',
-                reply_to_message_id=reply_to_message_id
-            )
-        except Exception as e:
-            logger.error(f"发送单个文档失败: {e}")
-            return None
-    else:
-        # 多个文档处理，使用文档组
-        try:
-            doc_media_group = []
-            for i, doc_item in enumerate(doc_list):
-                # 新格式：document:file_id:filename 或 旧格式：document:file_id
-                parts = doc_item.split(":", 2)
-                file_id = parts[1] if len(parts) >= 2 else parts[0]
-                # 只在最后一个文档添加说明，且caption不为None
-                caption_to_use = caption if (i == len(doc_list) - 1 and caption is not None) else None
-                doc_media_group.append(InputMediaDocument(
-                    media=file_id,
-                    caption=caption_to_use,
-                    parse_mode='HTML' if caption_to_use else None
-                ))
-            
-            sent_docs = await safe_send(
+        all_ids.append(first.message_id)
+        caption = None
+    # Audio and visual files cannot share a Telegram album; animations are sent singly.
+    batches = []
+    for item in media_list:
+        kind, file_id = item.split(":", 1)
+        if kind not in ("photo", "video", "animation", "audio"):
+            raise ValueError("Unsupported media type")
+        category = (
+            "audio"
+            if kind == "audio"
+            else "animation" if kind == "animation" else "visual"
+        )
+        if (
+            not batches
+            or category == "animation"
+            or batches[-1][0] != category
+            or len(batches[-1][1]) >= 10
+        ):
+            batches.append((category, []))
+        batches[-1][1].append((kind, file_id))
+    for category, batch in batches:
+        reply_id = first.message_id if first else None
+        if len(batch) == 1:
+            kind, file_id = batch[0]
+            kwargs = {
+                "chat_id": CHANNEL_ID,
+                kind: file_id,
+                "caption": caption if not all_ids else None,
+                "parse_mode": "HTML" if caption and not all_ids else None,
+                "reply_to_message_id": reply_id,
+            }
+            if kind in ("photo", "video", "animation"):
+                kwargs["has_spoiler"] = spoiler_flag
+            result = await send_part(getattr(context.bot, "send_" + kind), **kwargs)
+            messages = [result]
+        else:
+            media = []
+            for index, (kind, file_id) in enumerate(batch):
+                cls = {
+                    "photo": InputMediaPhoto,
+                    "video": InputMediaVideo,
+                    "audio": InputMediaAudio,
+                }[kind]
+                kwargs = {
+                    "media": file_id,
+                    "caption": caption if not all_ids and index == 0 else None,
+                    "parse_mode": (
+                        "HTML" if caption and not all_ids and index == 0 else None
+                    ),
+                }
+                if kind in ("photo", "video"):
+                    kwargs["has_spoiler"] = spoiler_flag
+                media.append(cls(**kwargs))
+            messages = await send_part(
                 context.bot.send_media_group,
                 chat_id=CHANNEL_ID,
-                media=doc_media_group,
-                reply_to_message_id=reply_to_message_id
+                media=media,
+                reply_to_message_id=reply_id,
             )
-            
-            if sent_docs and len(sent_docs) > 0:
-                return sent_docs[0]
-            return None
-        except Exception as e:
-            logger.error(f"发送文档组失败: {e}")
-            return None
+        first = first or messages[0]
+        all_ids.extend(m.message_id for m in messages)
+    return first, all_ids
+
+
+async def handle_text_publish(context, text_content, caption, spoiler_flag, prefix=""):
+    from utils.publish_service import send_part
+    import html
+
+    # User text is literal text, never arbitrary Telegram HTML.
+    text = html.escape(text_content)
+    if spoiler_flag:
+        text = f"<tg-spoiler>{text}</tg-spoiler>"
+    full_text = "\n\n".join(p for p in (prefix, text, caption) if p)
+    return await send_part(
+        context.bot.send_message, chat_id=CHANNEL_ID, text=full_text, parse_mode="HTML"
+    )
+
+
+async def handle_document_publish(
+    context, doc_list, caption=None, reply_to_message_id=None
+):
+    from utils.publish_service import send_part
+
+    first = None
+    if caption and len(caption) > 850:
+        first = await send_part(
+            context.bot.send_message,
+            chat_id=CHANNEL_ID,
+            text=caption,
+            parse_mode="HTML",
+            reply_to_message_id=reply_to_message_id,
+        )
+        reply_to_message_id = first.message_id
+        caption = None
+    for start in range(0, len(doc_list), 10):
+        batch = doc_list[start : start + 10]
+        file_ids = [item.split(":", 2)[1] if ":" in item else item for item in batch]
+        if len(batch) == 1:
+            message = await send_part(
+                context.bot.send_document,
+                chat_id=CHANNEL_ID,
+                document=file_ids[0],
+                caption=caption if start == 0 else None,
+                parse_mode="HTML" if caption and start == 0 else None,
+                reply_to_message_id=reply_to_message_id,
+            )
+        else:
+            group = [
+                InputMediaDocument(
+                    media=f,
+                    caption=caption if start == 0 and i == len(batch) - 1 else None,
+                    parse_mode=(
+                        "HTML"
+                        if caption and start == 0 and i == len(batch) - 1
+                        else None
+                    ),
+                )
+                for i, f in enumerate(file_ids)
+            ]
+            results = await send_part(
+                context.bot.send_media_group,
+                chat_id=CHANNEL_ID,
+                media=group,
+                reply_to_message_id=reply_to_message_id,
+            )
+            message = results[0]
+        first = first or message
+        reply_to_message_id = first.message_id
+    return first

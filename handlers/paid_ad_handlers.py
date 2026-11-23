@@ -13,11 +13,13 @@ from telegram.constants import ParseMode
 from telegram.ext import CallbackContext, ConversationHandler
 
 from utils import runtime_settings
+from utils.callback_context import edit_callback_content
 from handlers.mode_selection import submit
 from utils.blacklist import is_blacklisted
 from utils.qr_code import make_qr_png_bytes
 from utils.paid_ad_service import (
     confirm_paid_by_trade_id,
+    order_belongs_to_user,
     create_order_for_package,
     get_balance,
     get_packages,
@@ -117,12 +119,12 @@ async def handle_paid_ad_callback(update: Update, context: CallbackContext) -> O
     user_id = update.effective_user.id
 
     if not runtime_settings.paid_ad_enabled():
-        await query.edit_message_text("❌ 付费广告功能未开启")
+        await edit_callback_content(query, "❌ 付费广告功能未开启")
         return ConversationHandler.END
 
     if data == "paid_ad_balance":
         balance = await get_balance(user_id)
-        await query.edit_message_text(
+        await edit_callback_content(query,
             f"📢 当前广告发布余额：{balance} 次",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("购买广告次数", callback_data="paid_ad_buy_menu")]]),
         )
@@ -130,12 +132,12 @@ async def handle_paid_ad_callback(update: Update, context: CallbackContext) -> O
 
     if data == "paid_ad_buy_menu":
         current_type = _get_selected_pay_type(context)
-        await query.edit_message_text("请选择套餐：", reply_markup=_build_packages_keyboard(current_type=current_type))
+        await edit_callback_content(query, "请选择套餐：", reply_markup=_build_packages_keyboard(current_type=current_type))
         return None
 
     if data == "paid_ad_types":
         current_type = _get_selected_pay_type(context)
-        await query.edit_message_text("请选择收款币种/网络：", reply_markup=_build_types_keyboard(current_type=current_type))
+        await edit_callback_content(query, "请选择收款币种/网络：", reply_markup=_build_types_keyboard(current_type=current_type))
         return None
 
     if data.startswith("paid_ad_set_type_"):
@@ -145,7 +147,7 @@ async def handle_paid_ad_callback(update: Update, context: CallbackContext) -> O
             return None
         context.user_data["paid_ad_pay_type"] = t
         await query.answer(f"✅ 已切换为 {t}", show_alert=False)
-        await query.edit_message_text("请选择套餐：", reply_markup=_build_packages_keyboard(current_type=t))
+        await edit_callback_content(query, "请选择套餐：", reply_markup=_build_packages_keyboard(current_type=t))
         return None
 
     if data == "paid_ad_howto":
@@ -162,7 +164,7 @@ async def handle_paid_ad_callback(update: Update, context: CallbackContext) -> O
             )
         except Exception as e:
             logger.error(f"创建广告购买订单失败: {e}", exc_info=True)
-            await query.edit_message_text(f"❌ 创建订单失败：{e}")
+            await edit_callback_content(query, f"❌ 创建订单失败：{e}")
             return None
 
         out_trade_no = order["out_trade_no"]
@@ -191,7 +193,7 @@ async def handle_paid_ad_callback(update: Update, context: CallbackContext) -> O
         if pay_address:
             pay_address_line = f"收款地址：{_as_html_code(pay_address)}"
 
-        await query.edit_message_text(
+        await edit_callback_content(query,
             "🧾 订单已创建\n\n"
             f"订单号：{out_trade_no}\n"
             f"套餐：{pkg.credits} 次 - {pkg.amount} {runtime_settings.paid_ad_currency()}\n\n"
@@ -205,6 +207,9 @@ async def handle_paid_ad_callback(update: Update, context: CallbackContext) -> O
         )
 
         # 额外发送“收款信息 + 二维码”，让用户无需打开网页也能完成支付（保留打开支付页按钮兜底）
+        from utils.widget_service import send_order_widget
+        if await send_order_widget(context, "ad_widget", out_trade_no, chat=update.effective_chat):
+            return None
         chat_id = update.effective_chat.id if update.effective_chat else None
         if chat_id and pay_address and pay_amount:
             expires_text = ""
@@ -256,23 +261,27 @@ async def handle_paid_ad_callback(update: Update, context: CallbackContext) -> O
 
     if data.startswith("paid_ad_check_"):
         out_trade_no = data.replace("paid_ad_check_", "", 1)
+        if not await order_belongs_to_user(out_trade_no, user_id):
+            await query.answer("订单不存在或无权访问", show_alert=True)
+            return None
+        await query.answer("正在查询支付状态")
         try:
             ok = await confirm_paid_by_trade_id(out_trade_no)
         except Exception as e:
             logger.error(f"查单确认失败: {e}", exc_info=True)
-            await query.edit_message_text(f"❌ 查单失败：{e}")
+            await edit_callback_content(query, "查询暂不可用，请稍后重试。")
             return None
 
         if ok:
             balance = await get_balance(user_id)
-            await query.edit_message_text(f"✅ 支付确认成功，已入账。\n\n当前余额：{balance} 次")
+            await edit_callback_content(query, f"✅ 支付确认成功，已入账。\n\n当前余额：{balance} 次")
         else:
-            await query.edit_message_text("⏳ 暂未确认到支付成功（可能仍在链上确认或未完成支付）。\n\n请稍后再试。")
+            await edit_callback_content(query, "⏳ 暂未确认到账，请稍后重试。", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("查询支付状态", callback_data=f"paid_ad_check_{out_trade_no}")]]))
         return None
 
     if data == "paid_ad_noop":
         await query.answer("暂无可用套餐", show_alert=True)
         return None
 
-    await query.edit_message_text("❌ 未知操作")
+    await edit_callback_content(query, "❌ 未知操作")
     return None

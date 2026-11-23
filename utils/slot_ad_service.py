@@ -756,13 +756,17 @@ async def create_slot_ad_payment_order(
         await cursor.execute(
             """
             UPDATE slot_ad_orders
-            SET upay_trade_id = ?, payment_url = ?, expires_at = COALESCE(?, expires_at)
+            SET upay_trade_id = COALESCE(upay_trade_id, ?), payment_url = ?,
+                expires_at = COALESCE(?, expires_at), pay_amount = ?, pay_address = ?, pay_type = ?
             WHERE out_trade_no = ?
             """,
             (
                 str(trade_id) if trade_id else None,
                 str(payment_url) if payment_url else None,
                 float(expires_at_from_gateway) if expires_at_from_gateway else None,
+                str(parsed["pay_amount"]) if parsed.get("pay_amount") is not None else None,
+                parsed.get("pay_address"),
+                parsed.get("pay_type") or type_,
                 out_trade_no,
             ),
         )

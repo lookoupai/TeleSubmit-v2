@@ -46,6 +46,10 @@ async def submit(update: Update, context: CallbackContext) -> int:
     logger.info(f"收到 /submit 命令，user_id: {update.effective_user.id}")
     await cleanup_old_data()
     user_id = update.effective_user.id
+    words = (getattr(update.message, "text", "") or "").split()
+    command = words[0].split("@")[0] if words else ""
+    if command == "/submit" or command.endswith("开始投稿"):
+        context.user_data.pop("paid_ad", None)
     if context.user_data.pop("slot_ad_flow", None) is not None:
         logger.info(f"开始投稿前清理残留 slot_ad_flow，user_id: {user_id}")
     
@@ -195,6 +199,12 @@ async def start(update: Update, context: CallbackContext) -> int:
 
     # /start 深链（如 buy_slot_x）优先处理
     try:
+        if context.args == ["ratinghelp"] and update.effective_chat.type == "private":
+            await update.message.reply_text("请在原帖选择 1–5 星。若原帖允许修改评分，点击新的星级即可更新。")
+            return ConversationHandler.END
+        from handlers.rich_content import try_post_text
+        if await try_post_text(update, context):
+            return ConversationHandler.END
         handled = await try_handle_start_args(update, context)
         if handled:
             return ConversationHandler.END

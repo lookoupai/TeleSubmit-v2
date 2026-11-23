@@ -4,6 +4,14 @@
 """
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from config.settings import CUSTOM_BUTTON_ROWS
+from utils import runtime_settings
+
+
+def display_button(text):
+    if runtime_settings.disabled_buttons_enabled():
+        return InlineKeyboardButton(text, api_kwargs={"disabled": {}})
+    return InlineKeyboardButton(text, callback_data="ui_noop")
+
 
 
 class Keyboards:
@@ -38,19 +46,19 @@ class Keyboards:
         return Keyboards.main_menu()
     
     @staticmethod
-    def submission_confirm(session_id: int):
+    def submission_confirm(session_id, revision=1):
         """投稿确认键盘"""
         keyboard = [
             [
-                InlineKeyboardButton("✅ 确认发布", callback_data=f"submit_confirm_{session_id}"),
-                InlineKeyboardButton("✏️ 修改内容", callback_data=f"submit_edit_{session_id}")
+                InlineKeyboardButton("✅ 确认发布", callback_data=f"submit_confirm_{session_id}_{revision}"),
+                InlineKeyboardButton("✏️ 修改内容", callback_data=f"submit_edit_{session_id}_{revision}")
             ],
             [
-                InlineKeyboardButton("🏷️ 添加标签", callback_data=f"submit_addtag_{session_id}"),
-                InlineKeyboardButton("📎 添加媒体", callback_data=f"submit_media_{session_id}")
+                InlineKeyboardButton("🏷️ 添加标签", callback_data=f"submit_addtag_{session_id}_{revision}"),
+                InlineKeyboardButton("📎 添加媒体", callback_data=f"submit_media_{session_id}_{revision}")
             ],
             [
-                InlineKeyboardButton("❌ 取消投稿", callback_data=f"submit_cancel_{session_id}")
+                InlineKeyboardButton("❌ 取消投稿", callback_data=f"submit_cancel_{session_id}_{revision}")
             ]
         ]
         return InlineKeyboardMarkup(keyboard)
@@ -164,7 +172,7 @@ class Keyboards:
             nav_buttons.append(InlineKeyboardButton("⏮️ 首页", callback_data=f"{prefix}_1"))
             nav_buttons.append(InlineKeyboardButton("◀️ 上页", callback_data=f"{prefix}_{current_page-1}"))
         
-        nav_buttons.append(InlineKeyboardButton(f"📄 {current_page}/{total_pages}", callback_data="page_info"))
+        nav_buttons.append(display_button(f"📄 {current_page}/{total_pages}"))
         
         if current_page < total_pages:
             nav_buttons.append(InlineKeyboardButton("▶️ 下页", callback_data=f"{prefix}_{current_page+1}"))
@@ -246,7 +254,7 @@ class Keyboards:
             summary_text = "⭐ 当前暂无评分，欢迎点击评分"
 
         summary_row = [
-            InlineKeyboardButton(summary_text, callback_data="rating_info")
+            display_button(summary_text)
         ]
 
         rows = [buttons_row, summary_row]

@@ -1,166 +1,188 @@
-"""
-评分回调处理模块
+"""Save votes before sending either private feedback or the public aggregate."""
 
-处理用户点击评分按钮（1~5 星）的回调逻辑：
-- 每个用户对同一评分实体只记一次（或按配置允许修改）
-- 更新评分聚合数据
-- 刷新当前消息下方的评分按钮展示
-"""
+import asyncio
 import logging
-from telegram import Update
+from collections import OrderedDict
+
+from telegram import InlineKeyboardMarkup, Update
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import CallbackContext
 
+from config.settings import BOT_USERNAME
 from database.db_manager import get_db
 from ui.keyboards import Keyboards
 from utils import runtime_settings
+from utils.callback_context import MessageRef
+from utils.telegram_api import TelegramAPIError
+from utils.telegram_capabilities import feature_enabled
 
 logger = logging.getLogger(__name__)
+PENDING_REFRESHES = "rating_refreshes"
+
+
+async def save_vote(subject_id, user_id, score, allow_update):
+    async with get_db() as conn:
+        await conn.execute("PRAGMA busy_timeout=1000")
+        await conn.execute("BEGIN IMMEDIATE")
+        subject = await (
+            await conn.execute(
+                "SELECT score_sum, vote_count FROM rating_subjects WHERE id = ?",
+                (subject_id,),
+            )
+        ).fetchone()
+        if not subject:
+            return "这条内容无法评分", None
+        vote = await (
+            await conn.execute(
+                "SELECT score FROM rating_votes WHERE subject_id = ? AND user_id = ?",
+                (subject_id, user_id),
+            )
+        ).fetchone()
+        old_score = vote["score"] if vote else None
+        if vote and not allow_update:
+            return "你已经给这条内容评分过了", None
+        if old_score == score:
+            return "你的评分已是当前星级", None
+
+        await conn.execute(
+            """INSERT INTO rating_votes (subject_id, user_id, score, created_at, updated_at)
+               VALUES (?, ?, ?, unixepoch(), unixepoch())
+               ON CONFLICT(subject_id, user_id) DO UPDATE
+               SET score = excluded.score, updated_at = excluded.updated_at""",
+            (subject_id, user_id, score),
+        )
+        total = subject["score_sum"] + score - (old_score or 0)
+        count = subject["vote_count"] + int(vote is None)
+        avg = total / count
+        await conn.execute(
+            """UPDATE rating_subjects SET score_sum = ?, vote_count = ?, avg_score = ?,
+                   updated_at = unixepoch() WHERE id = ?""",
+            (total, count, avg, subject_id),
+        )
+        return ("感谢你的评分！" if vote is None else "已更新你的评分"), (avg, count)
+
+
+async def refresh_rating_keyboards(context):
+    pending = context.bot_data.get(PENDING_REFRESHES)
+    if not pending:
+        return
+    for _ in range(min(len(pending), 20)):
+        target, (subject_id, markup) = pending.popitem(last=False)
+        try:
+            async with get_db() as conn:
+                subject = await (
+                    await conn.execute(
+                        "SELECT avg_score, vote_count FROM rating_subjects WHERE id = ?",
+                        (subject_id,),
+                    )
+                ).fetchone()
+        except Exception:
+            pending.setdefault(target, (subject_id, markup))
+            logger.exception("读取评分汇总失败")
+            break
+        if not subject:
+            continue
+        keyboard = Keyboards.rating_keyboard(
+            subject_id, subject["avg_score"], subject["vote_count"]
+        )
+        if markup:
+            extra = [
+                row
+                for row in markup.inline_keyboard
+                if not any(
+                    str(button.callback_data or "").startswith("rating_")
+                    or (
+                        button.text.startswith("⭐")
+                        and (
+                            button.callback_data == "ui_noop"
+                            or "disabled" in button.api_kwargs
+                        )
+                    )
+                    for button in row
+                )
+            ]
+            keyboard = InlineKeyboardMarkup([*keyboard.inline_keyboard, *extra])
+        try:
+            await target.edit_markup(context.bot, reply_markup=keyboard)
+        except BadRequest as exc:
+            if "message is not modified" not in str(exc).lower():
+                logger.warning("评分键盘更新被拒绝")
+        except TelegramError as exc:
+            logger.warning("评分键盘更新失败: %s", type(exc).__name__)
 
 
 async def handle_rating_callback(update: Update, context: CallbackContext):
-    """
-    处理评分按钮回调
-    callback_data 格式：rating_{subject_id}_{score}
-    """
-    if not runtime_settings.rating_enabled():
-        # 功能关闭时给出友好提示
-        await update.callback_query.answer("评分功能暂未启用")
-        return
-
     query = update.callback_query
-    data = query.data
-    # 汇总按钮仅用于展示，不做任何操作
-    if data == "rating_info":
+    started = asyncio.get_running_loop().time()
+    if not runtime_settings.rating_enabled():
+        await query.answer("评分功能暂未启用")
         return
-
-    user_id = update.effective_user.id if update.effective_user else None
-
     try:
-        parts = data.split("_")
-        if len(parts) != 3:
-            await query.answer("评分数据无效", show_alert=True)
-            return
-
-        _, subject_id_str, score_str = parts
-        subject_id = int(subject_id_str)
-        score = int(score_str)
+        _, subject, value = query.data.split("_")
+        subject_id, score = int(subject), int(value)
+        if not 1 <= score <= 5 or not 1 <= subject_id < 2**63:
+            raise ValueError
+    except (ValueError, AttributeError):
+        await query.answer("评分数据无效", show_alert=True)
+        return
+    try:
+        text, result = await save_vote(
+            subject_id,
+            query.from_user.id,
+            score,
+            runtime_settings.rating_allow_update(),
+        )
     except Exception:
-        await query.answer("评分数据格式错误", show_alert=True)
+        logger.exception("评分保存失败")
+        await query.answer("评分处理失败，请稍后重试", show_alert=True)
+        return
+    if result is None:
+        await query.answer(text, show_alert=True)
         return
 
-    if score < 1 or score > 5:
-        await query.answer("评分范围必须在 1~5 星", show_alert=True)
-        return
-
-    if user_id is None:
-        await query.answer("无法识别用户，评分失败", show_alert=True)
-        return
-
+    message = query.message
     try:
-        async with get_db() as conn:
-            cursor = await conn.cursor()
+        target = MessageRef.from_query(query)
+        pending = context.bot_data.setdefault(PENDING_REFRESHES, OrderedDict())
+        pending[target] = (subject_id, getattr(message, "reply_markup", None))
+        if len(pending) > 1000:
+            pending.popitem(last=False)
+    except ValueError:
+        pass
 
-            # 查询该用户是否已经对该实体评分
-            await cursor.execute(
-                """
-                SELECT id, score FROM rating_votes
-                WHERE subject_id = ? AND user_id = ?
-                """,
-                (subject_id, user_id),
+    avg, count = result
+    try:
+        await asyncio.wait_for(query.answer(f"{text}  {score} 星"), timeout=2)
+    except (TelegramError, asyncio.TimeoutError):
+        logger.debug("评分回调应答已超时或不可用")
+    api = context.bot_data.get("telegram_api")
+    if (
+        not api
+        or not message
+        or message.chat.type != "channel"
+        or not feature_enabled("ephemeral_feedback", query.from_user.id)
+    ):
+        return
+    remaining = 13 - (asyncio.get_running_loop().time() - started)
+    if remaining <= 0:
+        return
+    try:
+        data = {
+            "text": f"已评 {score} 星 · 平均 {avg:.1f} · {count} 人参与",
+            "ephemeral_message_parameters": {"callback_query_id": query.id},
+        }
+        buttons = []
+        if getattr(message, "link", None):
+            buttons.append({"text": "查看原帖", "url": message.link})
+        username = BOT_USERNAME or getattr(context.bot, "username", None)
+        if isinstance(username, str) and username:
+            buttons.append(
+                {"text": "评分帮助", "url": f"https://t.me/{username}?start=ratinghelp"}
             )
-            row = await cursor.fetchone()
-
-            if row is None:
-                # 首次评分：插入记录并更新聚合
-                await cursor.execute(
-                    """
-                    INSERT INTO rating_votes (subject_id, user_id, score, created_at, updated_at)
-                    VALUES (?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now'))
-                    """,
-                    (subject_id, user_id, score),
-                )
-
-                await cursor.execute(
-                    """
-                    UPDATE rating_subjects
-                    SET score_sum = score_sum + ?,
-                        vote_count = vote_count + 1,
-                        avg_score = CAST(score_sum + ? AS REAL) / (vote_count + 1),
-                        updated_at = strftime('%s', 'now')
-                    WHERE id = ?
-                    """,
-                    (score, score, subject_id),
-                )
-
-                await query.answer("感谢你的评分！")
-            else:
-                old_score = int(row["score"])
-
-                if not runtime_settings.rating_allow_update():
-                    await query.answer("你已经给这条内容评分过了", show_alert=True)
-                else:
-                    if old_score == score:
-                        await query.answer("你的评分已是当前星级", show_alert=True)
-                    else:
-                        # 更新评分
-                        await cursor.execute(
-                            """
-                            UPDATE rating_votes
-                            SET score = ?, updated_at = strftime('%s', 'now')
-                            WHERE id = ?
-                            """,
-                            (score, row["id"]),
-                        )
-
-                        delta = score - old_score
-                        await cursor.execute(
-                            """
-                            UPDATE rating_subjects
-                            SET score_sum = score_sum + ?,
-                                avg_score = CASE
-                                    WHEN vote_count > 0 THEN CAST(score_sum + ? AS REAL) / vote_count
-                                    ELSE 0.0
-                                END,
-                                updated_at = strftime('%s', 'now')
-                            WHERE id = ?
-                            """,
-                            (delta, delta, subject_id),
-                        )
-
-                        await query.answer("已更新你的评分")
-
-            # 读取最新聚合结果
-            await cursor.execute(
-                """
-                SELECT avg_score, vote_count
-                FROM rating_subjects
-                WHERE id = ?
-                """,
-                (subject_id,),
-            )
-            subject_row = await cursor.fetchone()
-            if not subject_row:
-                # 数据异常时不尝试刷新按钮
-                return
-
-            avg_score = float(subject_row["avg_score"] or 0.0)
-            vote_count = int(subject_row["vote_count"] or 0)
-
-        # 刷新当前消息下方的评分键盘
-        try:
-            keyboard = Keyboards.rating_keyboard(subject_id, avg_score, vote_count)
-            await context.bot.edit_message_reply_markup(
-                chat_id=query.message.chat_id,
-                message_id=query.message.message_id,
-                reply_markup=keyboard,
-            )
-        except Exception as e:
-            # UI 刷新失败不影响评分结果
-            logger.error(f"刷新评分键盘失败: {e}", exc_info=True)
-
-    except Exception as e:
-        logger.error(f"处理评分回调时出错: {e}", exc_info=True)
-        try:
-            await query.answer("评分处理失败，请稍后重试", show_alert=True)
-        except Exception:
-            pass
+        if buttons:
+            data["reply_markup"] = {"inline_keyboard": [buttons]}
+        await asyncio.wait_for(api.call("sendMessage", data), timeout=remaining)
+    except TelegramAPIError as exc:
+        logger.info("评分临时反馈未送达: %s", exc.category)
+    except asyncio.TimeoutError:
+        logger.info("评分临时反馈超时")

@@ -23,7 +23,7 @@ from utils.helper_functions import (
     safe_send
 )
 from utils.submit_settings import get_snapshot
-from handlers.publish import publish_submission
+from handlers.publish import show_submission_confirmation
 
 logger = logging.getLogger(__name__)
 
@@ -296,8 +296,8 @@ async def handle_spoiler(update: Update, context: CallbackContext) -> int:
         logger.error(f"剧透保存错误: {e}")
         await update.message.reply_text("❌ 剧透选择保存失败，请稍后再试")
         return ConversationHandler.END
-    await update.message.reply_text("✅ 剧透选择已保存，正在发布投稿……")
-    return await publish_submission(update, context)
+    await update.message.reply_text("✅ 剧透选择已保存，请确认投稿内容。")
+    return await show_submission_confirmation(update, context)
 
 # 跳过可选项的处理函数
 async def skip_optional_link(update: Update, context: CallbackContext) -> int:
@@ -323,8 +323,8 @@ async def skip_optional_link(update: Update, context: CallbackContext) -> int:
         logger.error(f"/skip_optional 执行错误: {e}")
         await update.message.reply_text("❌ 跳过可选项失败，请稍后再试")
         return ConversationHandler.END
-    await update.message.reply_text("✅ 已跳过所有可选项，正在发布投稿……")
-    return await publish_submission(update, context)
+    await update.message.reply_text("✅ 已跳过所有可选项，请确认投稿内容。")
+    return await show_submission_confirmation(update, context)
 
 async def skip_optional_title(update: Update, context: CallbackContext) -> int:
     """
@@ -348,8 +348,8 @@ async def skip_optional_title(update: Update, context: CallbackContext) -> int:
         logger.error(f"/skip_optional 执行错误: {e}")
         await update.message.reply_text("❌ 跳过可选项失败，请稍后再试")
         return ConversationHandler.END
-    await update.message.reply_text("✅ 已跳过所有可选项，正在发布投稿……")
-    return await publish_submission(update, context)
+    await update.message.reply_text("✅ 已跳过所有可选项，请确认投稿内容。")
+    return await show_submission_confirmation(update, context)
 
 async def skip_optional_note(update: Update, context: CallbackContext) -> int:
     """
@@ -373,8 +373,8 @@ async def skip_optional_note(update: Update, context: CallbackContext) -> int:
         logger.error(f"/skip_optional 执行错误: {e}")
         await update.message.reply_text("❌ 跳过可选项失败，请稍后再试")
         return ConversationHandler.END
-    await update.message.reply_text("✅ 已跳过所有可选项，正在发布投稿……")
-    return await publish_submission(update, context)
+    await update.message.reply_text("✅ 已跳过所有可选项，请确认投稿内容。")
+    return await show_submission_confirmation(update, context)
 
 async def prompt_media(update: Update, context: CallbackContext) -> int:
     """

@@ -39,6 +39,7 @@ from utils.slot_ad_service import (
     format_epoch,
     format_slot_blocked_message,
     get_slot_order_for_edit,
+    get_slot_order_for_user_notice,
     get_active_orders,
     get_plans,
     get_slot_defaults,
@@ -493,6 +494,10 @@ async def handle_slot_callback(update: Update, context: CallbackContext) -> None
 
     if data.startswith("slot_ad_check_"):
         out_trade_no = data.replace("slot_ad_check_", "", 1)
+        order = await get_slot_order_for_user_notice(out_trade_no)
+        if not order or order.get("buyer_user_id") != user_id:
+            await query.answer("订单不存在或无权访问", show_alert=True)
+            return
         try:
             ok = await confirm_paid_by_trade_id(out_trade_no)
         except Exception as e:
@@ -697,8 +702,10 @@ async def handle_slot_text_input(update: Update, context: CallbackContext) -> No
             reply_markup=_with_remind_toggle_button(InlineKeyboardMarkup(rows), enabled=False, out_trade_no=str(out_trade_no)),
         )
 
+        from utils.widget_service import send_order_widget
+        widget_sent = await send_order_widget(context, "slot_widget", out_trade_no, chat=update.effective_chat)
         chat_id = update.effective_chat.id if update.effective_chat else None
-        if chat_id and pay_address and pay_amount is not None:
+        if not widget_sent and chat_id and pay_address and pay_amount is not None:
             expires_text = None
             if isinstance(expires_at, (int, float)) and float(expires_at) > 0:
                 try:

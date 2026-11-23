@@ -799,3 +799,7 @@ def validate_upload_limits(*, max_docs: int, max_media_default: int, max_media_m
         raise ValueError("MAX_MEDIA_DEFAULT 范围应为 0~50")
     if m2 <= 0 or m2 > 200:
         raise ValueError("MAX_MEDIA_MEDIA_MODE 范围应为 1~200")
+
+
+def disabled_buttons_enabled() -> bool:
+    return get_bool("telegram_ui.disabled_buttons", False)

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  * { box-sizing: border-box }
+  body { margin: 0; padding: 12px; font: 1em system-ui; color: var(--tg-theme-text-color) }
+  header, nav { display: flex; align-items: center; gap: 8px; flex-wrap: wrap }
+  header { justify-content: space-between; margin-bottom: 8px }
+  strong { color: var(--tg-theme-accent-text-color); overflow-wrap: anywhere }
+  p { margin: 4px 0; overflow-wrap: anywhere }
+  .hint { color: var(--tg-theme-hint-color); font-size: .85em }
+  nav { margin-top: 10px }
+  button { min-height: 44px; padding: 0 10px; border: 0; border-radius: 6px; font: inherit;
+    color: var(--tg-theme-button-text-color); background: var(--tg-theme-button-color) }
+  button:disabled { color: var(--tg-theme-hint-color); background: var(--tg-theme-secondary-bg-color) }
+  button + button { color: var(--tg-theme-link-color); background: var(--tg-theme-secondary-bg-color) }
+</style>
+<header><b id="product">广告订单</b><strong id="amount"></strong></header>
+<p id="order" class="hint"></p>
+<p id="status"></p>
+<p id="time" class="hint"></p>
+<nav><button id="check" disabled>查询支付状态</button><button id="copy" disabled>复制金额</button></nav>
+<script>
+(() => {
+  const widget = window.TelegramWidget;
+  if (!widget) return;
+  const el = id => document.getElementById(id);
+  const check = el('check');
+  const copy = el('copy');
+  let latest = { r: -1 };
+  let checking = false;
+  let acceptedUntil = 0;
+  let notice = '';
+  const labels = {
+    waiting: '等待支付', checking: '正在核对支付', unconfirmed: '暂未确认到账',
+    paid: '已到账', window_ended: '支付时间已到，请先查询状态',
+    unavailable: '查询暂不可用', closed: '订单已结束'
+  };
+  function render() {
+    const s = latest;
+    if (s.r < 0) return;
+    const remaining = Math.max(0, Math.floor(s.exp - Date.now() / 1000));
+    const ended = s.exp && !remaining;
+    const state = ended && !['paid', 'closed', 'checking'].includes(s.state) ? 'window_ended' : s.state;
+    el('product').textContent = s.product;
+    el('amount').textContent = s.amount ? s.amount + ' ' + s.currency : '';
+    el('order').textContent = s.ref + (s.network ? ' · ' + s.network : '');
+    el('status').textContent = notice || labels[state] || labels.waiting;
+    el('time').textContent = state === 'paid' || state === 'closed' ? '' :
+      ended ? '支付时间已到' : remaining ?
+      '剩余 ' + Math.floor(remaining / 60) + ':' + String(remaining % 60).padStart(2, '0') : '';
+    if (s.checked && state !== 'paid' && state !== 'closed') {
+      const checked = new Date(s.checked * 1000).toLocaleTimeString();
+      el('time').textContent += (el('time').textContent ? ' · ' : '') + '核对 ' + checked;
+    }
+    const accepted = Date.now() < acceptedUntil;
+    check.disabled = checking || accepted || ['paid', 'checking', 'closed'].includes(state);
+    if (!accepted && notice === labels.checking) notice = '';
+    copy.disabled = !s.amount || ended || state === 'paid' || state === 'closed';
+  }
+  function sync() {
+    try {
+      const current = JSON.parse(widget.chatData);
+      if (current && current.r > latest.r) {
+        latest = current;
+        notice = '';
+        acceptedUntil = 0;
+      }
+    } catch {}
+    render();
+  }
+  check.addEventListener('click', async () => {
+    checking = true;
+    notice = '正在提交查询';
+    render();
+    const revision = latest.r;
+    try {
+      const response = await widget.request('check:' + latest.ref);
+      const answer = JSON.parse(response.result || '{}');
+      if (revision === latest.r) {
+        notice = answer.message || '';
+        if (notice === labels.checking) acceptedUntil = Date.now() + 15000;
+      }
+    } catch {
+      if (revision === latest.r) notice = '暂时无法查询，请稍后重试';
+    } finally {
+      checking = false;
+      render();
+    }
+  });
+  copy.addEventListener('click', () => widget.copyText(latest.amount));
+  widget.onEvent('chatDataChanged', sync);
+  setInterval(render, 1000);
+  sync();
+  widget.ready();
+})();
+</script>
+</html>

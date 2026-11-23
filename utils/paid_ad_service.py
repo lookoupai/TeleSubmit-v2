@@ -175,13 +175,17 @@ async def create_order_for_package(
         await cursor.execute(
             """
             UPDATE ad_orders
-            SET upay_trade_id = ?, payment_url = ?, expires_at = COALESCE(?, expires_at)
+            SET upay_trade_id = COALESCE(upay_trade_id, ?), payment_url = ?,
+                expires_at = COALESCE(?, expires_at), pay_amount = ?, pay_address = ?, pay_type = ?
             WHERE out_trade_no = ?
             """,
             (
                 str(trade_id) if trade_id else None,
                 str(payment_url) if payment_url else None,
                 float(expires_at_from_gateway) if expires_at_from_gateway else None,
+                str(parsed["pay_amount"]) if parsed.get("pay_amount") is not None else None,
+                parsed.get("pay_address"),
+                parsed.get("pay_type") or type_,
                 out_trade_no,
             ),
         )
@@ -200,56 +204,65 @@ async def create_order_for_package(
 
 
 async def _credit_purchase_if_needed(
-    *,
-    out_trade_no: str,
-    trade_id: Optional[str],
-    now: float,
+    *, out_trade_no: str, trade_id: Optional[str], now: float
 ) -> bool:
     async with get_db() as conn:
-        cursor = await conn.cursor()
-        await cursor.execute("SELECT * FROM ad_orders WHERE out_trade_no = ?", (out_trade_no,))
-        order = await cursor.fetchone()
+        await conn.execute("BEGIN IMMEDIATE")
+        order = await (
+            await conn.execute(
+                "SELECT * FROM ad_orders WHERE out_trade_no=?", (out_trade_no,)
+            )
+        ).fetchone()
         if not order:
             return False
         if order["status"] == "paid":
             return True
-
-        user_id = int(order["user_id"])
-        credits = int(order["credits"])
-
-        try:
-            await cursor.execute(
-                """
-                INSERT INTO ad_credit_ledger(out_trade_no, user_id, delta, reason, created_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (out_trade_no, user_id, credits, "purchase", now),
+        if (
+            order["upay_trade_id"]
+            and trade_id
+            and str(order["upay_trade_id"]) != str(trade_id)
+        ):
+            return False
+        user_id, credits = int(order["user_id"]), int(order["credits"])
+        existing = await (
+            await conn.execute(
+                "SELECT * FROM ad_credit_ledger WHERE out_trade_no=? OR idempotency_key=?",
+                (out_trade_no, f"purchase:{out_trade_no}"),
             )
-        except sqlite3.IntegrityError:
-            # 已入账（幂等）
-            pass
-
-        # 入账余额
-        await cursor.execute(
-            """
-            INSERT INTO user_ad_credits(user_id, balance, updated_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET
-                balance = user_ad_credits.balance + excluded.balance,
-                updated_at = excluded.updated_at
-            """,
-            (user_id, credits, now),
-        )
-
-        await cursor.execute(
-            """
-            UPDATE ad_orders
-            SET status = 'paid', paid_at = ?, upay_trade_id = COALESCE(?, upay_trade_id)
-            WHERE out_trade_no = ?
-            """,
+        ).fetchone()
+        if existing:
+            if (
+                existing["user_id"] != user_id
+                or existing["delta"] != credits
+                or existing["reason"] != "purchase"
+            ):
+                raise ValueError("Purchase ledger mismatch")
+        else:
+            await conn.execute(
+                "INSERT INTO ad_credit_ledger(out_trade_no,user_id,delta,reason,created_at,idempotency_key) VALUES(?,?,?,'purchase',?,?)",
+                (out_trade_no, user_id, credits, now, f"purchase:{out_trade_no}"),
+            )
+            await conn.execute(
+                """INSERT INTO user_ad_credits(user_id,balance,updated_at) VALUES(?,?,?)
+                ON CONFLICT(user_id) DO UPDATE SET balance=balance+excluded.balance,updated_at=excluded.updated_at""",
+                (user_id, credits, now),
+            )
+        await conn.execute(
+            "UPDATE ad_orders SET status='paid',paid_at=?,upay_trade_id=COALESCE(?,upay_trade_id) WHERE out_trade_no=?",
             (now, trade_id, out_trade_no),
         )
         return True
+
+
+async def order_belongs_to_user(out_trade_no: str, user_id: int) -> bool:
+    async with get_db() as conn:
+        row = await (
+            await conn.execute(
+                "SELECT 1 FROM ad_orders WHERE out_trade_no=? AND user_id=?",
+                (out_trade_no, user_id),
+            )
+        ).fetchone()
+        return row is not None
 
 
 async def handle_upay_notify(payload: Dict[str, Any]) -> Tuple[bool, str]:
@@ -319,42 +332,83 @@ async def confirm_paid_by_trade_id(out_trade_no: str) -> bool:
     return await _credit_purchase_if_needed(out_trade_no=out_trade_no, trade_id=str(trade_id), now=time.time())
 
 
-async def reserve_one_credit(user_id: int) -> bool:
+async def reserve_one_credit(user_id: int, *, operation_id: int) -> bool:
     now = time.time()
     async with get_db() as conn:
-        cursor = await conn.cursor()
-        await cursor.execute(
-            """
-            UPDATE user_ad_credits
-            SET balance = balance - 1, updated_at = ?
-            WHERE user_id = ? AND balance >= 1
-            """,
+        await conn.execute("BEGIN IMMEDIATE")
+        op = await (
+            await conn.execute(
+                "SELECT owner_user_id,state FROM bot_operations WHERE id=?",
+                (operation_id,),
+            )
+        ).fetchone()
+        if not op or op["owner_user_id"] != user_id:
+            return False
+        consumed = await (
+            await conn.execute(
+                "SELECT 1 FROM ad_credit_ledger WHERE idempotency_key=?",
+                (f"consume:{operation_id}",),
+            )
+        ).fetchone()
+        refunded = await (
+            await conn.execute(
+                "SELECT 1 FROM ad_credit_ledger WHERE idempotency_key=?",
+                (f"refund:{operation_id}",),
+            )
+        ).fetchone()
+        if refunded:
+            return False
+        if consumed:
+            return True
+        if op["state"] != "processing":
+            return False
+        cursor = await conn.execute(
+            "UPDATE user_ad_credits SET balance=balance-1,updated_at=? WHERE user_id=? AND balance>=1",
             (now, user_id),
         )
         if cursor.rowcount != 1:
             return False
-        await cursor.execute(
-            "INSERT INTO ad_credit_ledger(out_trade_no, user_id, delta, reason, created_at) VALUES (NULL, ?, ?, ?, ?)",
-            (user_id, -1, "consume", now),
+        await conn.execute(
+            "INSERT INTO ad_credit_ledger(user_id,delta,reason,created_at,idempotency_key) VALUES(?,-1,'consume',?,?)",
+            (user_id, now, f"consume:{operation_id}"),
         )
         return True
 
 
-async def refund_one_credit(user_id: int) -> None:
-    now = time.time()
+async def refund_one_credit(user_id: int, *, operation_id: int) -> bool:
     async with get_db() as conn:
-        cursor = await conn.cursor()
-        await cursor.execute(
-            """
-            INSERT INTO user_ad_credits(user_id, balance, updated_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET
-                balance = user_ad_credits.balance + excluded.balance,
-                updated_at = excluded.updated_at
-            """,
-            (user_id, 1, now),
+        await conn.execute("BEGIN IMMEDIATE")
+        op = await (
+            await conn.execute(
+                "SELECT owner_user_id,state FROM bot_operations WHERE id=?",
+                (operation_id,),
+            )
+        ).fetchone()
+        if not op or op["owner_user_id"] != user_id or op["state"] != "failed":
+            return False
+        receipts = await (
+            await conn.execute(
+                "SELECT 1 FROM publish_parts WHERE operation_id=? AND state IN ('sending','unknown','succeeded') LIMIT 1",
+                (operation_id,),
+            )
+        ).fetchone()
+        if receipts:
+            return False
+        consumed = await (
+            await conn.execute(
+                "SELECT 1 FROM ad_credit_ledger WHERE idempotency_key=?",
+                (f"consume:{operation_id}",),
+            )
+        ).fetchone()
+        if not consumed:
+            return False
+        cur = await conn.execute(
+            "INSERT INTO ad_credit_ledger(user_id,delta,reason,created_at,idempotency_key) VALUES(?,1,'refund',?,?) ON CONFLICT(idempotency_key) DO NOTHING",
+            (user_id, time.time(), f"refund:{operation_id}"),
         )
-        await cursor.execute(
-            "INSERT INTO ad_credit_ledger(out_trade_no, user_id, delta, reason, created_at) VALUES (NULL, ?, ?, ?, ?)",
-            (user_id, 1, "refund", now),
-        )
+        if cur.rowcount == 1:
+            await conn.execute(
+                "UPDATE user_ad_credits SET balance=balance+1,updated_at=? WHERE user_id=?",
+                (time.time(), user_id),
+            )
+        return True

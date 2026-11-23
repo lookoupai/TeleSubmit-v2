@@ -76,6 +76,8 @@ class WebhookServer:
                     update_types.append("callback_query")
                 if update.inline_query:
                     update_types.append("inline_query")
+                if "widget_query" in update.api_kwargs:
+                    update_types.append("widget_query")
                 
                 update_type_str = ", ".join(update_types) if update_types else "unknown"
                 
@@ -170,14 +172,8 @@ async def setup_webhook(application, webhook_url: str, webhook_path: str, secret
         
         # 设置新的 webhook
         # 明确指定需要接收的更新类型，包括频道消息
-        allowed_updates = [
-            "message",           # 普通消息
-            "edited_message",    # 编辑的消息
-            "channel_post",      # 频道消息（重要！）
-            "edited_channel_post",  # 编辑的频道消息
-            "callback_query",   # 回调查询
-            "inline_query",      # 内联查询
-        ]
+        from utils.telegram_capabilities import allowed_updates as telegram_allowed_updates
+        allowed_updates = telegram_allowed_updates()
         success = await application.bot.set_webhook(
             url=full_webhook_url,
             secret_token=secret_token,

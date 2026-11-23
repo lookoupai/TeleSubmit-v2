@@ -45,6 +45,15 @@ async def handle_callback_query(update: Update, context: CallbackContext):
     data = query.data
     user_id = update.effective_user.id
     
+    callback_id = getattr(query, "id", None)
+    if callback_id and context.user_data.get("handled_submission_callback") == callback_id:
+        return ConversationHandler.END
+    if data in ("ui_noop", "page_info", "rating_info"):
+        await query.answer()
+        return
+    if data.startswith("submit_"):
+        if not await valid_submission_callback(query, user_id):
+            return
     logger.info(f"收到回调查询: {data} 来自用户: {user_id}")
     
     try:
@@ -60,15 +69,30 @@ async def handle_callback_query(update: Update, context: CallbackContext):
 
         # 投稿确认相关
         elif data.startswith("submit_confirm_"):
-            await handle_submit_confirm(update, context)
+            result = await handle_submit_confirm(update, context)
+            if callback_id:
+                context.user_data["handled_submission_callback"] = callback_id
+            return result
         elif data.startswith("submit_edit_"):
-            await handle_submit_edit(update, context)
+            result = await handle_submit_edit(update, context)
+            if callback_id:
+                context.user_data["handled_submission_callback"] = callback_id
+            return result
         elif data.startswith("submit_addtag_"):
-            await handle_submit_addtag(update, context)
+            result = await handle_submit_addtag(update, context)
+            if callback_id:
+                context.user_data["handled_submission_callback"] = callback_id
+            return result
         elif data.startswith("submit_media_"):
-            await handle_submit_media(update, context)
+            result = await handle_submit_media(update, context)
+            if callback_id:
+                context.user_data["handled_submission_callback"] = callback_id
+            return result
         elif data.startswith("submit_cancel_"):
-            await handle_submit_cancel(update, context)
+            result = await handle_submit_cancel(update, context)
+            if callback_id:
+                context.user_data["handled_submission_callback"] = callback_id
+            return result
         
         # 热门帖子筛选
         elif data.startswith("hot_filter_"):
@@ -158,27 +182,49 @@ async def handle_callback_query(update: Update, context: CallbackContext):
             pass
 
 
+async def valid_submission_callback(query, user_id):
+    try:
+        _, action, session_id, revision = query.data.split("_")
+        revision = int(revision)
+    except (ValueError, AttributeError):
+        await query.answer("该预览已失效，请重新发送 /submit。", show_alert=True)
+        return False
+    async with get_db() as conn:
+        row = await (
+            await conn.execute(
+                "SELECT session_id,revision FROM submissions WHERE user_id=?",
+                (user_id,),
+            )
+        ).fetchone()
+    if not row or row["session_id"] != session_id or row["revision"] != revision:
+        await query.answer("内容已变更或会话已结束，请重新确认。", show_alert=True)
+        return False
+    return True
+
+
 async def handle_submit_confirm(update: Update, context: CallbackContext):
-    """处理投稿确认"""
     query = update.callback_query
-    user_id = update.effective_user.id
-    
-    await query.edit_message_text("⏳ 正在发布投稿...")
-    
-    # 调用发布函数
-    result = await publish_submission(update, context)
-    
-    return result
+    if not await valid_submission_callback(query, update.effective_user.id):
+        return STATE["PUBLISH"]
+    return await publish_submission(update, context)
 
 
 async def handle_submit_edit(update: Update, context: CallbackContext):
-    """处理编辑投稿内容"""
     query = update.callback_query
-    
-    await query.edit_message_text(
-        "✏️ 编辑功能开发中...\n\n当前请取消后重新开始投稿。",
-        reply_markup=None
-    )
+    async with get_db() as conn:
+        row = await (
+            await conn.execute(
+                "SELECT text_content FROM submissions WHERE user_id=?",
+                (update.effective_user.id,),
+            )
+        ).fetchone()
+    if row and row["text_content"]:
+        await query.edit_message_text(
+            "请发送修改后的投稿正文；后续会重新确认标签和可选信息。"
+        )
+        return STATE["TEXT_CONTENT"]
+    await query.edit_message_text("请发送修改后的简介，或发送 /skip_optional 跳过。")
+    return STATE["NOTE"]
 
 
 async def handle_submit_addtag(update: Update, context: CallbackContext):
@@ -209,11 +255,14 @@ async def handle_submit_cancel(update: Update, context: CallbackContext):
     """处理取消投稿"""
     query = update.callback_query
     user_id = update.effective_user.id
+    if not await valid_submission_callback(query, user_id):
+        return STATE["PUBLISH"]
+    _, _, session_id, revision = query.data.split("_")
     
     try:
         async with get_db() as conn:
             c = await conn.cursor()
-            await c.execute("DELETE FROM submissions WHERE user_id=?", (user_id,))
+            await c.execute("DELETE FROM submissions WHERE user_id=? AND session_id=? AND revision=?", (user_id, session_id, int(revision)))
             await conn.commit()
         
         await query.edit_message_text(

@@ -12,11 +12,12 @@ from typing import Any, Dict, Optional
 
 from utils import runtime_settings
 from utils.submit_policy import get_effective_policy
+from utils.telegram_capabilities import feature_enabled
 
 SNAPSHOT_KEY = "submit_settings_snapshot"
 
 
-def _snapshot_from_policy(policy: Dict[str, Any]) -> Dict[str, Any]:
+def _snapshot_from_policy(policy: Dict[str, Any], user_id=None) -> Dict[str, Any]:
     tags = policy.get("tags") or {}
     upload = policy.get("upload_limits") or {}
     return {
@@ -29,6 +30,7 @@ def _snapshot_from_policy(policy: Dict[str, Any]) -> Dict[str, Any]:
         "notify_owner": bool((policy.get("bot") or {}).get("notify_owner", True)),
         "rating_enabled": bool((policy.get("rating") or {}).get("enabled", True)),
         "rating_allow_update": bool((policy.get("rating") or {}).get("allow_update", True)),
+        "rich_posts": feature_enabled("rich_posts", user_id),
         "max_docs": int(upload.get("max_docs", 10)),
         "max_media_default": int(upload.get("max_media_default", 10)),
         "max_media_media_mode": int(upload.get("max_media_media_mode", 50)),
@@ -74,7 +76,7 @@ def build_snapshot() -> Dict[str, Any]:
 
 def build_snapshot_for_user(user_id: int) -> Dict[str, Any]:
     policy = get_effective_policy(int(user_id))
-    return _snapshot_from_policy(policy)
+    return _snapshot_from_policy(policy, user_id)
 
 
 def ensure_snapshot(context: Any, *, user_id: Optional[int] = None) -> Dict[str, Any]:

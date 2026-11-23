@@ -16,16 +16,18 @@ import asyncio
 import re
 import logging
 import argparse
+import json
 import sys
 from pathlib import Path
 from datetime import datetime
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config.settings import TOKEN, CHANNEL_ID, DB_PATH
 from database.db_manager import get_db, init_db
 from telegram import Bot
 from telegram.error import TelegramError
+from utils.content_normalizer import normalize_message_content
 
 logging.basicConfig(
     level=logging.INFO,
@@ -112,14 +114,15 @@ async def import_messages_to_db(messages: list):
                     continue
                 
                 # 提取数据
-                caption = msg.caption or msg.text or ''
+                normalized = normalize_message_content(msg)
+                caption = normalized.text
                 tags = extract_tags_from_caption(caption)
                 title = extract_title_from_caption(caption)
                 
                 # 确定内容类型
                 content_type = 'text'
                 file_ids = ''
-                filename = ''
+                filename = ' | '.join(normalized.filenames)
                 
                 if msg.photo:
                     content_type = 'photo'
@@ -134,6 +137,12 @@ async def import_messages_to_db(messages: list):
                     filename = msg.document.file_name or ''
                 elif msg.media_group_id:
                     content_type = 'media_group'
+                elif normalized.documents:
+                    content_type = 'document'
+                    file_ids = json.dumps(
+                        [f"document:{file_id}:{name}" for file_id, name in normalized.documents],
+                        ensure_ascii=False,
+                    )
                 
                 # 获取统计数据（如果可用）
                 # 注意：Bot 无法获取频道消息的浏览量
@@ -148,15 +157,15 @@ async def import_messages_to_db(messages: list):
                     INSERT INTO published_posts
                     (message_id, user_id, username, title, tags, link, note,
                      content_type, file_ids, caption, filename, publish_time,
-                     views, forwards, reactions, heat_score, last_update)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     views, forwards, reactions, heat_score, last_update, source_content_json, renderer)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     message_id,
                     0,  # 未知用户
                     '',
                     title,
                     tags,
-                    '',  # link
+                    normalized.links[0] if normalized.links else '',
                     caption,
                     content_type,
                     file_ids,
@@ -167,7 +176,9 @@ async def import_messages_to_db(messages: list):
                     forwards,
                     0,  # reactions
                     0.0,  # heat_score
-                    publish_time
+                    publish_time,
+                    normalized.source_json() if normalized.rich else None,
+                    'rich' if normalized.rich else None,
                 ))
                 
                 imported += 1

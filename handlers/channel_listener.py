@@ -372,10 +372,9 @@ async def extract_message_info(message):
         if not message_id:
             raise ValueError("消息ID缺失")
         
-        # 安全获取文本内容
-        caption = getattr(message, 'caption', None) or ''
-        text = getattr(message, 'text', None) or ''
-        full_text = caption or text or ''
+        from utils.content_normalizer import normalize_message_content, normalized_quote
+        normalized = normalize_message_content(message)
+        full_text = normalized.text
         
         # 安全获取日期
         date = getattr(message, 'date', None)
@@ -397,11 +396,14 @@ async def extract_message_info(message):
             'username': 'channel',  # 频道消息默认用户名
             'related_message_ids': []  # 用于媒体组
         }
+        if normalized.rich:
+            normalized.quote = normalized_quote(message)
+            info['source_content_json'] = normalized.source_json()
         
         # 提取文本信息
         if full_text and isinstance(full_text, str):
             info['tags'] = extract_tags_from_text(full_text)
-            info['link'] = extract_link_from_text(full_text)
+            info['link'] = (normalized.links or [extract_link_from_text(full_text)])[0]
             # note 就是完整的 caption（去掉标签和链接后）
             note_text = re.sub(r'#\w+', '', full_text)
             note_text = re.sub(r'https?://[^\s]+', '', note_text)
@@ -413,7 +415,11 @@ async def extract_message_info(message):
             info['note'] = ''
         
         # 提取媒体信息（容错处理）
-        filename_candidates = []
+        filename_candidates = list(normalized.filenames)
+        for file_id, file_name in normalized.documents:
+            info['doc_list'].append(f"document:{file_id}:{file_name or '未知文件'}")
+        if info['doc_list']:
+            info['content_type'] = 'document'
         
         try:
             if hasattr(message, 'photo') and message.photo:
@@ -471,7 +477,8 @@ async def extract_message_info(message):
                 file_id = getattr(message.document, 'file_id', None)
                 file_name = getattr(message.document, 'file_name', None) or '未知文件'
                 if file_id:
-                    info['doc_list'].append(f"document:{file_id}:{file_name}")
+                    if file_id not in {doc_id for doc_id, _ in normalized.documents}:
+                        info['doc_list'].append(f"document:{file_id}:{file_name}")
                     info['content_type'] = 'document'
                     filename_candidates.append(file_name)
         except Exception as e:
@@ -592,6 +599,7 @@ async def save_channel_message(message_info: dict):
         link = message_info.get('link', '')
         note = message_info.get('note', '')
         caption = message_info.get('caption', '')
+        source_json = message_info.get('source_content_json')
         filename = message_info.get('filename', '')
         publish_time = message_info.get('publish_time', datetime.now())
         user_id = message_info.get('user_id', 0)
@@ -623,10 +631,15 @@ async def save_channel_message(message_info: dict):
                 
                 # 检查是否已存在（使用 SELECT FOR UPDATE 防止并发问题）
                 await cursor.execute(
-                    "SELECT message_id FROM published_posts WHERE message_id = ?",
+                    "SELECT message_id, user_id, renderer FROM published_posts WHERE message_id = ?",
                     (message_id,)
                 )
-                if await cursor.fetchone():
+                existing = await cursor.fetchone()
+                if existing and (
+                    not (source_json or existing["renderer"] == "rich")
+                    or existing["user_id"] not in (None, 0)
+                    or not message_info.get("edited")
+                ):
                     logger.debug(f"消息 {message_id} 已存在，跳过")
                     return False
                 
@@ -635,8 +648,16 @@ async def save_channel_message(message_info: dict):
                     await cursor.execute("""
                         INSERT INTO published_posts 
                         (message_id, user_id, username, title, tags, link, note,
-                         content_type, file_ids, caption, filename, publish_time, last_update, related_message_ids)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         content_type, file_ids, caption, filename, publish_time, last_update, related_message_ids,
+                         source_content_json, renderer, template_version)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(message_id) DO UPDATE SET
+                            title=excluded.title, tags=excluded.tags, link=excluded.link, note=excluded.note,
+                            content_type=excluded.content_type, file_ids=excluded.file_ids, caption=excluded.caption,
+                            filename=excluded.filename, last_update=excluded.last_update,
+                            source_content_json=excluded.source_content_json, renderer=excluded.renderer,
+                            template_version=excluded.template_version
+                        WHERE published_posts.user_id IS NULL OR published_posts.user_id=0
                     """, (
                         message_id,
                         user_id,
@@ -651,9 +672,12 @@ async def save_channel_message(message_info: dict):
                         filename,
                         publish_timestamp,
                         datetime.now().timestamp(),
-                        related_ids_json
+                        related_ids_json,
+                        source_json, 'rich' if source_json else None, None,
                     ))
-                    post_id = cursor.lastrowid
+                    if not cursor.rowcount:
+                        return False
+                    post_id = message_id
                     # 注意：get_db() 上下文管理器会自动 commit，不需要手动 commit
                     logger.info(f"已保存频道消息 {message_id} (post_id: {post_id}) 到数据库")
                 except Exception as db_error:
@@ -705,11 +729,12 @@ async def save_channel_message(message_info: dict):
             else:
                 publish_dt = datetime.now()
             
+            from utils.content_normalizer import search_description
             post_doc = PostDocument(
                 message_id=message_id,
                 post_id=post_id,
                 title=title,
-                description=note,
+                description=search_description(source_json, note),
                 tags=tags,
                 filename=filename,
                 link=link,
@@ -1021,6 +1046,7 @@ async def handle_channel_message(update: Update, context: CallbackContext):
             if not message_info or not isinstance(message_info, dict):
                 logger.error(f"提取的消息信息无效: {message_info}")
                 return
+            message_info["edited"] = update.edited_channel_post is not None
             
             # 验证和规范化消息信息（处理不规范数据）
             try:

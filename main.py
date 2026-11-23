@@ -46,6 +46,8 @@ from utils.database import (
 # 工具函数导入
 from utils.logging_config import setup_logging, cleanup_old_logs
 from utils.helper_functions import CONFIG
+from utils.telegram_capabilities import allowed_updates as telegram_allowed_updates
+from utils.telegram_api import TelegramAPI
 
 # 处理程序导入 - 按功能分组
 # 基础命令
@@ -296,6 +298,8 @@ async def main():
     
     # 初始化数据库
     await init_db()
+    from utils.operation_service import recover_interrupted_operations
+    await recover_interrupted_operations()
     # 载入运行时配置快照（广告/AI 等热更新项）
     try:
         from utils.runtime_settings import refresh as refresh_runtime_settings
@@ -383,6 +387,7 @@ async def main():
     # 初始化应用程序
     logger.info(f"机器人正在启动，运行模式: {RUN_MODE}")
     await application.initialize()
+    application.bot_data["telegram_api"] = TelegramAPI(token)
     await application.start()
     
     # 设置命令菜单
@@ -447,14 +452,7 @@ async def main():
         # Polling 模式（默认）
         logger.info("🔄 启动 Polling 模式...")
         # 明确指定需要接收的更新类型，包括频道消息
-        allowed_updates = [
-            "message",           # 普通消息
-            "edited_message",    # 编辑的消息
-            "channel_post",      # 频道消息（重要！）
-            "edited_channel_post",  # 编辑的频道消息
-            "callback_query",   # 回调查询
-            "inline_query",      # 内联查询
-        ]
+        allowed_updates = telegram_allowed_updates()
         await application.updater.start_polling(allowed_updates=allowed_updates)
         logger.info("✅ Polling 模式已启动")
     
@@ -513,6 +511,9 @@ async def shutdown(application, sig, webhook_server=None):
             await application.updater.stop()
         await application.stop()
         await application.shutdown()
+        adapter = application.bot_data.get("telegram_api")
+        if adapter:
+            await adapter.close()
 
         logger.info("应用程序关闭完成")
 
@@ -549,6 +550,14 @@ def setup_application(application):
     application.add_error_handler(error_handler)
     
     # 注册基本命令处理器
+    from handlers.telegram_ui_admin import ui_settings, publication_status, publication_resolve, publication_retry, publication_repair
+    from handlers.widget_handlers import OrderWidgetHandler, handle_widget_button
+    application.add_handler(OrderWidgetHandler(), group=-997)
+    application.add_handler(CommandHandler("telegram_ui", ui_settings))
+    application.add_handler(CommandHandler("publish_status", publication_status))
+    application.add_handler(CommandHandler("publish_resolve", publication_resolve))
+    application.add_handler(CommandHandler("publish_retry", publication_retry))
+    application.add_handler(CommandHandler("publish_repair", publication_repair))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("cancel", cancel))
     application.add_handler(CommandHandler("settings", settings))
@@ -619,6 +628,7 @@ def setup_application(application):
         
         # 添加会话处理器
         logger.info("注册会话处理器...")
+        from handlers.callback_handlers import handle_callback_query
         conv_handler = ConversationHandler(
             entry_points=[
                 CommandHandler("submit", submit),
@@ -659,7 +669,7 @@ def setup_application(application):
                 ],
                 STATE.get('EXTRA', 12): [MessageHandler(filters.TEXT & ~filters.COMMAND, collect_extra)],
                 STATE.get('PUBLISH', 13): [
-                    CallbackQueryHandler(publish_submission, pattern="^publish$"),
+                    CallbackQueryHandler(handle_callback_query, pattern="^submit_"),
                     CallbackQueryHandler(cancel, pattern="^cancel$")
                 ],
                 
@@ -685,6 +695,7 @@ def setup_application(application):
             fallbacks=[CommandHandler("cancel", cancel)],
             name="submission_conversation",
             persistent=False,
+            allow_reentry=True,
         )
         
         application.add_handler(conv_handler, group=2)
@@ -694,14 +705,21 @@ def setup_application(application):
     
     # 添加回调查询处理器（统一处理所有回调）
     from handlers.callback_handlers import handle_callback_query
+    from handlers.rating_handlers import handle_rating_callback
     # 添加审核回调处理器（在通用处理器之前，以便优先匹配）
     application.add_handler(CallbackQueryHandler(handle_review_callback, pattern="^review_"), group=3)
+    application.add_handler(CallbackQueryHandler(handle_rating_callback, pattern=r"^rating_\d+_\d+$", block=False), group=3)
+    application.add_handler(CallbackQueryHandler(handle_widget_button, pattern=r"^widget_(?:check_|balance$)", block=False), group=3)
     application.add_handler(CallbackQueryHandler(handle_callback_query), group=3)
     
     # 添加周期性清理任务
     try:
         logger.info("设置定期任务...")
         job_queue = application.job_queue
+        from handlers.rating_handlers import refresh_rating_keyboards
+        from utils.widget_service import widget_refresh_tick
+        job_queue.run_repeating(refresh_rating_keyboards, interval=1, first=1)
+        job_queue.run_repeating(widget_refresh_tick, interval=2, first=2, name="widget_refresh")
         job_queue.run_repeating(
             lambda context: asyncio.create_task(cleanup_old_data()), 
             interval=300, 
