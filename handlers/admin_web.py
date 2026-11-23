@@ -109,73 +109,17 @@ def _require_auth(request: web.Request) -> None:
 
 
 def _html_page(*, title: str, body: str) -> web.Response:
-    html_text = f"""<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{html.escape(title)}</title>
-  <style>
-    :root {{ color-scheme: light dark; }}
-    body {{ font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 0; background: Canvas; color: CanvasText; }}
-    header {{ padding: 14px 18px; border-bottom: 1px solid rgba(127,127,127,.25); display:flex; gap:12px; align-items:center; }}
-    header .title {{ font-weight: 700; }}
-    header .meta {{ opacity: .7; font-size: 12px; }}
-    main {{ padding: 18px; max-width: 1100px; margin: 0 auto; }}
-    a {{ color: inherit; }}
-    .nav a {{ margin-right: 12px; }}
-    @media (max-width: 720px) {{
-      header {{ flex-wrap: wrap; }}
-      header .nav {{ width: 100%; display: flex; flex-wrap: wrap; gap: 10px 14px; }}
-      .nav a {{ margin-right: 0; }}
-    }}
-    .card {{ border: 1px solid rgba(127,127,127,.25); border-radius: 10px; padding: 14px; margin-bottom: 14px; }}
-    .grid {{ display:grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
-    .row {{ display:flex; gap: 10px; flex-wrap: wrap; align-items: center; }}
-    label {{ display:block; font-size: 12px; opacity: .8; margin-bottom: 4px; }}
-    input[type=text], textarea, select {{ width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(127,127,127,.35); background: transparent; }}
-    select option {{ color: CanvasText; background: Canvas; }}
-    @supports not (color: CanvasText) {{
-      select option {{ color: #111; background: #fff; }}
-    }}
-    @media (prefers-color-scheme: dark) {{
-      @supports not (color: CanvasText) {{
-        select option {{ color: #eee; background: #111; }}
-      }}
-    }}
-    textarea {{ min-height: 120px; }}
-    button {{ padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(127,127,127,.35); background: rgba(127,127,127,.12); cursor: pointer; }}
-    .danger {{ border-color: rgba(220, 38, 38, .6); }}
-    table {{ width: 100%; border-collapse: collapse; }}
-    th, td {{ border-bottom: 1px solid rgba(127,127,127,.25); padding: 8px; text-align: left; vertical-align: top; }}
-    th {{ font-size: 12px; opacity: .8; }}
-    .pill {{ font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid rgba(127,127,127,.35); display:inline-block; }}
-  </style>
-</head>
-<body>
-  <header>
-    <div class="title">{html.escape(ADMIN_WEB_TITLE)}</div>
-    <div class="meta">服务器时间：{html.escape(_now_text())}</div>
-		    <div class="nav" style="margin-left:auto">
-		      <a href="{ADMIN_WEB_PATH}">首页</a>
-		      <a href="{ADMIN_WEB_PATH}/submit">投稿设置</a>
-		      <a href="{ADMIN_WEB_PATH}/telegram-ui">Telegram 功能</a>
-		      <a href="{ADMIN_WEB_PATH}/whitelist">投稿白名单</a>
-		      <a href="{ADMIN_WEB_PATH}/schedule">定时发布</a>
-		      <a href="{ADMIN_WEB_PATH}/fallback">兜底定时</a>
-		      <a href="{ADMIN_WEB_PATH}/slots">广告位</a>
-		      <a href="{ADMIN_WEB_PATH}/ads">广告参数</a>
-		      <a href="{ADMIN_WEB_PATH}/ai">AI审核</a>
-		      <a href="{ADMIN_WEB_PATH}/logout">退出</a>
-		    </div>
-	  </header>
-  <main>
-    {body}
-  </main>
-</body>
-</html>
-"""
-    return web.Response(text=html_text, content_type="text/html")
+    from ui.admin_page import render_admin_page
+
+    response = web.Response(
+        text=render_admin_page(
+            title=title, body=body, brand=ADMIN_WEB_TITLE,
+            base=ADMIN_WEB_PATH, server_time=_now_text(),
+        ),
+        content_type="text/html",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 async def login_get(request: web.Request) -> web.Response:
@@ -185,7 +129,7 @@ async def login_get(request: web.Request) -> web.Response:
   <form method="post" action="{ADMIN_WEB_PATH}/login">
     <div style="max-width:520px">
       <label>访问 Token</label>
-      <input type="text" name="token" placeholder="请输入 ADMIN_WEB.TOKEN" />
+      <input type="password" name="token" autocomplete="current-password" placeholder="请输入管理员访问 Token" />
       <div style="height:10px"></div>
       <button type="submit">登录</button>
     </div>
@@ -215,22 +159,36 @@ async def logout(request: web.Request) -> web.Response:
 async def index(request: web.Request) -> web.Response:
     _require_auth(request)
     base = ADMIN_WEB_PATH.rstrip("/")
+    groups = (
+        ("投稿与审核", (
+            ("submit", "投稿设置", "投稿模式、上传限制、评分与防重复规则"),
+            ("whitelist", "投稿白名单", "用户策略与专属投稿权限"),
+            ("ai", "AI 审核", "审核模型、策略与异常处理"),
+        )),
+        ("频道运营", (
+            ("schedule", "定时发布", "发布时间、消息正文与置顶设置"),
+            ("fallback", "兜底定时", "预存内容与无投稿时的发布规则"),
+            ("telegram-ui", "Telegram 功能", "评分反馈、富消息与订单卡片"),
+        )),
+        ("广告管理", (
+            ("slots", "广告位", "默认按钮、在租广告与素材修改"),
+            ("ads", "广告参数", "发布套餐、租期与支付参数"),
+        )),
+    )
+    cards = []
+    for group, links in groups:
+        entries = "".join(
+            f'<a class="home-link" href="{base}/{path}">'
+            f'<strong>{label}</strong><span aria-hidden="true">↗</span>'
+            f'<p>{description}</p></a>'
+            for path, label, description in links
+        )
+        cards.append(f'<section class="card home-group"><h3>{group}</h3>{entries}</section>')
     body = f"""
-	<div class="card">
-	  <h2 style="margin-top:0">概览</h2>
-		  <div class="row">
-		    <a href="{base}/submit"><button>投稿设置</button></a>
-		    <a href="{base}/telegram-ui"><button>Telegram 功能</button></a>
-		    <a href="{base}/whitelist"><button>投稿白名单</button></a>
-		    <a href="{base}/schedule"><button>管理定时发布</button></a>
-		    <a href="{base}/fallback"><button>管理兜底定时</button></a>
-		    <a href="{base}/slots"><button>管理广告位</button></a>
-		    <a href="{base}/ads"><button>管理广告参数</button></a>
-		    <a href="{base}/ai"><button>管理 AI 审核</button></a>
-		  </div>
-	  <p style="opacity:.75;margin-bottom:0">本后台仅管理已落库的热更新项；修改 <code>config.ini</code> 类配置仍需要重启生效。</p>
-	</div>
-	"""
+<div class="page-heading"><h2>管理概览</h2><p class="field-help">选择需要管理的功能。</p></div>
+<div class="home-groups">{''.join(cards)}</div>
+"""
+
     return _html_page(title="首页", body=body)
 
 
@@ -246,6 +204,15 @@ def _telegram_ui_page(*, form=None, errors=None, saved=False, save_error=False):
     }
     rows = []
     for name, label in UI_FEATURES.items():
+        if name in ("disabled_buttons", "rich_review", "order_widgets"):
+            if rows:
+                rows.append("</fieldset>")
+            group_name = {
+                "disabled_buttons": "基础交互",
+                "rich_review": "内容展示",
+                "order_widgets": "订单卡片",
+            }[name]
+            rows.append(f'<fieldset class="feature-group"><legend>{group_name}</legend>')
         value = (
             str(form.get(name, "false"))
             if form is not None
@@ -266,6 +233,7 @@ def _telegram_ui_page(*, form=None, errors=None, saved=False, save_error=False):
           <option value="true" {"selected" if value == "true" else ""}>开启</option>
         </select>
       </div>""")
+    rows.append("</fieldset>")
     pilot = (
         str(form.get("pilot_user_ids", ""))
         if form is not None
@@ -286,26 +254,12 @@ def _telegram_ui_page(*, form=None, errors=None, saved=False, save_error=False):
         feedback = '<p class="feedback" role="status">设置已保存。</p>'
     base = ADMIN_WEB_PATH.rstrip("/")
     body = f"""
-<style>
-  .telegram-settings h2 {{ margin: 0 0 8px; }}
-  .telegram-settings .feature-row {{ display: grid; grid-template-columns: minmax(0, 1fr) 140px; gap: 20px; align-items: center; padding: 18px 0; border-bottom: 1px solid rgba(127,127,127,.25); }}
-  .telegram-settings label {{ font-size: 15px; font-weight: 600; opacity: 1; }}
-  .telegram-settings .field-help {{ margin: 5px 0 0; font-size: 13px; line-height: 1.6; opacity: .75; }}
-  .telegram-settings select, .telegram-settings input, .telegram-settings button {{ min-height: 44px; color: inherit; font: inherit; }}
-  .telegram-settings .pilot {{ padding: 20px 0; }}
-  .telegram-settings .pilot input {{ margin-top: 10px; }}
-  .telegram-settings .feedback {{ padding: 12px; border: 1px solid rgba(127,127,127,.35); border-radius: 8px; }}
-  .telegram-settings .field-error {{ color: light-dark(#b42318, #ffb4ab); }}
-  .telegram-settings [aria-invalid=true] {{ border-color: currentColor; }}
-  .telegram-settings button {{ font-weight: 600; padding: 8px 18px; }}
-  @media (max-width: 520px) {{
-    .telegram-settings .feature-row {{ grid-template-columns: minmax(0, 1fr); gap: 10px; padding: 16px 0; }}
-    .telegram-settings button {{ width: 100%; }}
-  }}
-</style>
-<section class="card telegram-settings">
+
+<div class="page-heading">
   <h2>Telegram 功能</h2>
   <p class="field-help">保存后生效。富消息频道投稿从新投稿会话起应用，审核卡片和订单卡片从新消息起应用。</p>
+</div>
+<section class="card telegram-settings">
   {feedback}
   <form method="post" action="{base}/telegram-ui">
     {''.join(rows)}
@@ -796,8 +750,12 @@ async def submit_get(request: web.Request) -> web.Response:
 
     body = f"""
 <div class="card">
-  <h2 style="margin-top:0">投稿设置（热更新）</h2>
+  <h2 style="margin-top:0">投稿设置</h2>
   <p style="opacity:.75;margin:0">保存后立即生效；多实例部署可能存在短暂延迟，取决于各实例刷新策略。</p>
+  <nav class="section-links" aria-label="投稿设置分区">
+    <a href="#basic">基础限制</a><a href="#upload">上传限制</a>
+    <a href="#duplicate">重复检测与频率</a><a href="#rating">评分</a>
+  </nav>
 </div>
 
 <div class="card">
@@ -1816,12 +1774,12 @@ async def schedule_get(request: web.Request) -> web.Response:
 <div class="card">
   <h2 style="margin-top:0">定时发布</h2>
   <div class="row">
-    <span class="pill">enabled: {str(cfg.enabled)}</span>
-    <span class="pill">auto_pin: {str(getattr(cfg, "auto_pin", False))}</span>
-    <span class="pill">delete_prev: {str(getattr(cfg, "delete_prev", False))}</span>
-    <span class="pill">next_run_at: {html.escape(_format_epoch(cfg.next_run_at))}</span>
-    <span class="pill">last_run_at: {html.escape(_format_epoch(cfg.last_run_at))}</span>
-    <span class="pill">last_message_id: {html.escape(str(cfg.last_message_id or '-'))}</span>
+    <span class="pill {'enabled' if cfg.enabled else ''}">{'已启用' if cfg.enabled else '已关闭'}</span>
+    <span class="pill">自动置顶 {'开启' if getattr(cfg, "auto_pin", False) else '关闭'}</span>
+    <span class="pill">删除上一条 {'开启' if getattr(cfg, "delete_prev", False) else '关闭'}</span>
+    <span class="pill">下次发布 {html.escape(_format_epoch(cfg.next_run_at))}</span>
+    <span class="pill">上次发布 {html.escape(_format_epoch(cfg.last_run_at))}</span>
+    <span class="pill">消息 ID {html.escape(str(cfg.last_message_id or '-'))}</span>
   </div>
 </div>
 
@@ -1839,16 +1797,16 @@ async def schedule_get(request: web.Request) -> web.Response:
       <div>
         <label>调度类型</label>
         <select name="schedule_type">
-          <option value="daily_at" {"selected" if schedule_type=="daily_at" else ""}>每天固定时间（daily_at）</option>
-          <option value="every_n_hours" {"selected" if schedule_type=="every_n_hours" else ""}>每 N 小时（every_n_hours）</option>
+          <option value="daily_at" {"selected" if schedule_type=="daily_at" else ""}>每天固定时间</option>
+          <option value="every_n_hours" {"selected" if schedule_type=="every_n_hours" else ""}>按小时间隔</option>
         </select>
       </div>
       <div>
-        <label>daily_at 时间（HH:MM）</label>
+        <label>固定发布时间（HH:MM）</label>
         <input type="text" name="daily_time" value="{html.escape(time_value)}" />
       </div>
       <div>
-        <label>every_n_hours 间隔（小时）</label>
+        <label>发布间隔（小时）</label>
         <input type="text" name="every_hours" value="{html.escape(hours_value)}" />
       </div>
       <div>
@@ -2016,15 +1974,13 @@ async def fallback_get(request: web.Request) -> web.Response:
 <div class="card">
   <h2 style="margin-top:0">兜底定时发布（当天无投稿才发）</h2>
   <div class="row">
-    <span class="pill">enabled: {str(cfg.enabled)}</span>
-    <span class="pill">next_run_at: {html.escape(_format_epoch(cfg.next_run_at))}</span>
-    <span class="pill">last_run_at: {html.escape(_format_epoch(cfg.last_run_at))}</span>
-    <span class="pill">cycle_id: {html.escape(str(cfg.cycle_id))}</span>
-    <span class="pill">miss_tolerance: {html.escape(str(cfg.miss_tolerance_seconds))}s</span>
-    <span class="pill">header_len: {html.escape(str(len(getattr(cfg, "header_text", "") or "")))}</span>
-    <span class="pill">footer_len: {html.escape(str(len(getattr(cfg, "footer_text", "") or "")))}</span>
-    <span class="pill">pool_enabled: {html.escape(str(pool_enabled))}</span>
-    <span class="pill">pool_remaining: {html.escape(str(pool_remaining))}</span>
+    <span class="pill {'enabled' if cfg.enabled else ''}">{'已启用' if cfg.enabled else '已关闭'}</span>
+    <span class="pill">下次发布 {html.escape(_format_epoch(cfg.next_run_at))}</span>
+    <span class="pill">上次发布 {html.escape(_format_epoch(cfg.last_run_at))}</span>
+    <span class="pill">当前轮次 {html.escape(str(cfg.cycle_id))}</span>
+    <span class="pill">错过时限 {html.escape(str(cfg.miss_tolerance_seconds))} 秒</span>
+    <span class="pill">可用内容 {html.escape(str(pool_enabled))} 条</span>
+    <span class="pill">本轮剩余 {html.escape(str(pool_remaining))} 条</span>
   </div>
   <p style="opacity:.75;margin:10px 0 0">到点触发时会先查询 <code>published_posts</code> 当天是否已有发布记录；有则跳过，无则从预存池随机取一条（本周期不重复）。</p>
 </div>
@@ -2392,7 +2348,7 @@ async def slots_get(request: web.Request) -> web.Response:
             )
         visual_rows_html = "".join(visual_rows)
 
-        active_html = "-"
+        active_html = '<p class="field-help">尚无在租广告</p>'
         terminate_form = ""
         edit_form = ""
         if a or r or p:
@@ -2503,10 +2459,13 @@ async def slots_get(request: web.Request) -> web.Response:
                 """
 
         rows_html.append(f"""
-          <tr>
-            <td><b>{slot_id}</b></td>
-            <td>{'✅' if sell_enabled else '❌'}</td>
-            <td style="min-width:280px">
+          <details class="card slot-card" {"open" if slot_id == 1 else ""}>
+            <summary class="slot-heading">
+              <span>广告位 {slot_id}</span>
+              <span class="pill {'enabled' if sell_enabled else ''}">{'开放售卖' if sell_enabled else '暂停售卖'}</span>
+            </summary>
+            <div class="slot-content">
+            <div>
               <form method="post" action="{ADMIN_WEB_PATH}/slots/save">
                 <input type="hidden" name="slot_id" value="{slot_id}" />
                 <label>默认按钮（可视化编辑，推荐）</label>
@@ -2528,13 +2487,15 @@ async def slots_get(request: web.Request) -> web.Response:
                   </tbody>
                 </table>
                 <div style="height:10px"></div>
-                <label>文本模式（兼容旧格式）</label>
+                <details>
+                <summary>文本模式</summary>
                 <p style="margin:6px 0 8px;opacity:.8">
                   语法：每行 <code>文案 | https://链接 [| style] [| emoji_id]</code>。<br/>
                   示例：<code>客服 | https://b.com | success | 5390937358942362430</code>。<br/>
                   若“可视化编辑”有填写内容，保存时优先使用可视化数据。
                 </p>
                 <textarea name="default_buttons" rows="4" style="width:100%">{html.escape(default_buttons_lines)}</textarea>
+                </details>
                 <div style="height:6px"></div>
                 <label>售卖开关</label>
                 <select name="sell_enabled">
@@ -2545,33 +2506,20 @@ async def slots_get(request: web.Request) -> web.Response:
                 <button type="submit">保存</button>
                 <button type="submit" name="clear" value="1">清空默认</button>
               </form>
-            </td>
-            <td>{active_html}<div style="height:8px"></div>{terminate_form}{edit_form}</td>
-          </tr>
+            </div>
+            <div class="slot-current"><h4>当前广告</h4>{active_html}<div style="height:8px"></div>{terminate_form}{edit_form}</div>
+            </div>
+          </details>
         """)
 
     active_rows_count = int(runtime_settings.slot_ad_active_rows_count())
     body = f"""
 <div class="card">
-  <h2 style="margin-top:0">广告位（slot_1..slot_{len(slot_defaults)}）</h2>
+  <h2 style="margin-top:0">广告位</h2>
   <p style="opacity:.75;margin:0">当前启用行数：前 {active_rows_count} 行；保存后立即生效；若终止生效广告，会尝试立刻更新“最近一次定时消息”的按钮。</p>
 </div>
 
-<div class="card">
-  <table>
-    <thead>
-      <tr>
-        <th>slot</th>
-        <th>可售卖</th>
-        <th>默认按钮/设置</th>
-        <th>当前广告</th>
-      </tr>
-    </thead>
-    <tbody>
-      {''.join(rows_html)}
-    </tbody>
-  </table>
-</div>
+{''.join(rows_html)}
 """
     return _html_page(title="广告位", body=body)
 
