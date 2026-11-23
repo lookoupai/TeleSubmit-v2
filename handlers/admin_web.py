@@ -52,6 +52,7 @@ from utils.fallback_publish_service import (
 )
 from utils import runtime_settings
 from utils import submit_policy
+from utils.telegram_capabilities import UI_FEATURES, normalize_pilot_user_ids
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,11 @@ def _html_page(*, title: str, body: str) -> web.Response:
     main {{ padding: 18px; max-width: 1100px; margin: 0 auto; }}
     a {{ color: inherit; }}
     .nav a {{ margin-right: 12px; }}
+    @media (max-width: 720px) {{
+      header {{ flex-wrap: wrap; }}
+      header .nav {{ width: 100%; display: flex; flex-wrap: wrap; gap: 10px 14px; }}
+      .nav a {{ margin-right: 0; }}
+    }}
     .card {{ border: 1px solid rgba(127,127,127,.25); border-radius: 10px; padding: 14px; margin-bottom: 14px; }}
     .grid {{ display:grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
     .row {{ display:flex; gap: 10px; flex-wrap: wrap; align-items: center; }}
@@ -153,6 +159,7 @@ def _html_page(*, title: str, body: str) -> web.Response:
 		    <div class="nav" style="margin-left:auto">
 		      <a href="{ADMIN_WEB_PATH}">首页</a>
 		      <a href="{ADMIN_WEB_PATH}/submit">投稿设置</a>
+		      <a href="{ADMIN_WEB_PATH}/telegram-ui">Telegram 功能</a>
 		      <a href="{ADMIN_WEB_PATH}/whitelist">投稿白名单</a>
 		      <a href="{ADMIN_WEB_PATH}/schedule">定时发布</a>
 		      <a href="{ADMIN_WEB_PATH}/fallback">兜底定时</a>
@@ -213,6 +220,7 @@ async def index(request: web.Request) -> web.Response:
 	  <h2 style="margin-top:0">概览</h2>
 		  <div class="row">
 		    <a href="{base}/submit"><button>投稿设置</button></a>
+		    <a href="{base}/telegram-ui"><button>Telegram 功能</button></a>
 		    <a href="{base}/whitelist"><button>投稿白名单</button></a>
 		    <a href="{base}/schedule"><button>管理定时发布</button></a>
 		    <a href="{base}/fallback"><button>管理兜底定时</button></a>
@@ -224,6 +232,132 @@ async def index(request: web.Request) -> web.Response:
 	</div>
 	"""
     return _html_page(title="首页", body=body)
+
+
+def _telegram_ui_page(*, form=None, errors=None, saved=False, save_error=False):
+    errors = errors or {}
+    descriptions = {
+        "disabled_buttons": "将页码、评分汇总显示为不可点击的按钮。应用于后续渲染。",
+        "ephemeral_feedback": "评分后向点击者显示个人反馈。需先在投稿设置中启用评分。",
+        "rich_review": "新审核卡片支持折叠正文和 AI 审核结论。",
+        "rich_posts": "新投稿会话使用富消息，支持纯文本和单文档。媒体组与剧透沿用现有格式。",
+        "order_widgets": "在私聊的新广告次数订单中显示支付状态卡片。需先启用付费广告。",
+        "slot_order_widgets": "在私聊的新广告位订单中显示支付状态卡片。需先启用按钮广告位。",
+    }
+    rows = []
+    for name, label in UI_FEATURES.items():
+        value = (
+            str(form.get(name, "false"))
+            if form is not None
+            else str(runtime_settings.get_bool("telegram_ui." + name, False)).lower()
+        )
+        error = errors.get(name)
+        invalid = ' aria-invalid="true"' if error else ""
+        error_text = f'<p class="field-error" role="alert">{html.escape(error)}</p>' if error else ""
+        rows.append(f"""
+      <div class="feature-row">
+        <div>
+          <label for="{name}">{html.escape(label)}</label>
+          <p id="{name}-help" class="field-help">{descriptions[name]}</p>
+          {error_text}
+        </div>
+        <select id="{name}" name="{name}" aria-describedby="{name}-help"{invalid}>
+          <option value="false" {"selected" if value != "true" else ""}>关闭</option>
+          <option value="true" {"selected" if value == "true" else ""}>开启</option>
+        </select>
+      </div>""")
+    pilot = (
+        str(form.get("pilot_user_ids", ""))
+        if form is not None
+        else runtime_settings.get_raw("telegram_ui.pilot_user_ids") or ""
+    )
+    pilot_error = errors.get("pilot_user_ids")
+    pilot_invalid = ' aria-invalid="true"' if pilot_error else ""
+    pilot_error_text = (
+        f'<p id="pilot-error" class="field-error" role="alert">{html.escape(pilot_error)}</p>'
+        if pilot_error else ""
+    )
+    feedback = ""
+    if errors:
+        feedback = '<p class="feedback field-error" role="alert">保存失败，请检查下方标记的设置。</p>'
+    elif save_error:
+        feedback = '<p class="feedback field-error" role="alert">保存失败，请稍后重试。</p>'
+    elif saved:
+        feedback = '<p class="feedback" role="status">设置已保存。</p>'
+    base = ADMIN_WEB_PATH.rstrip("/")
+    body = f"""
+<style>
+  .telegram-settings h2 {{ margin: 0 0 8px; }}
+  .telegram-settings .feature-row {{ display: grid; grid-template-columns: minmax(0, 1fr) 140px; gap: 20px; align-items: center; padding: 18px 0; border-bottom: 1px solid rgba(127,127,127,.25); }}
+  .telegram-settings label {{ font-size: 15px; font-weight: 600; opacity: 1; }}
+  .telegram-settings .field-help {{ margin: 5px 0 0; font-size: 13px; line-height: 1.6; opacity: .75; }}
+  .telegram-settings select, .telegram-settings input, .telegram-settings button {{ min-height: 44px; color: inherit; font: inherit; }}
+  .telegram-settings .pilot {{ padding: 20px 0; }}
+  .telegram-settings .pilot input {{ margin-top: 10px; }}
+  .telegram-settings .feedback {{ padding: 12px; border: 1px solid rgba(127,127,127,.35); border-radius: 8px; }}
+  .telegram-settings .field-error {{ color: light-dark(#b42318, #ffb4ab); }}
+  .telegram-settings [aria-invalid=true] {{ border-color: currentColor; }}
+  .telegram-settings button {{ font-weight: 600; padding: 8px 18px; }}
+  @media (max-width: 520px) {{
+    .telegram-settings .feature-row {{ grid-template-columns: minmax(0, 1fr); gap: 10px; padding: 16px 0; }}
+    .telegram-settings button {{ width: 100%; }}
+  }}
+</style>
+<section class="card telegram-settings">
+  <h2>Telegram 功能</h2>
+  <p class="field-help">保存后生效。富消息频道投稿从新投稿会话起应用，审核卡片和订单卡片从新消息起应用。</p>
+  {feedback}
+  <form method="post" action="{base}/telegram-ui">
+    {''.join(rows)}
+    <div class="pilot">
+      <label for="pilot_user_ids">试点用户</label>
+      <p id="pilot-help" class="field-help">填写 Telegram 用户 ID，用逗号分隔；留空面向全部用户。审核卡片按管理员筛选，频道投稿按投稿人筛选，其余按操作用户筛选。原生禁用按钮为全局设置。</p>
+      <input id="pilot_user_ids" name="pilot_user_ids" type="text" value="{html.escape(pilot, quote=True)}" placeholder="例如 123456789, 987654321" maxlength="2200" aria-describedby="pilot-help{' pilot-error' if pilot_error else ''}"{pilot_invalid}>
+      {pilot_error_text}
+    </div>
+    <button type="submit">保存设置</button>
+    <p class="field-help">已发订单的查单和状态刷新会继续运行。功能效果取决于 Telegram 服务端与客户端支持。</p>
+  </form>
+</section>
+"""
+    response = _html_page(title="Telegram 功能", body=body)
+    response.headers["Cache-Control"] = "no-store"
+    if errors:
+        response.set_status(400)
+    elif save_error:
+        response.set_status(503)
+    return response
+
+
+async def telegram_ui_get(request: web.Request) -> web.Response:
+    _require_auth(request)
+    return _telegram_ui_page(saved=request.query.get("saved") == "1")
+
+
+async def telegram_ui_post(request: web.Request) -> web.Response:
+    _require_auth(request)
+    form = await request.post()
+    values = {}
+    errors = {}
+    for name in UI_FEATURES:
+        if len(form.getall(name, [])) != 1 or form.get(name) not in ("true", "false"):
+            errors[name] = "请选择开启或关闭。"
+        else:
+            values["telegram_ui." + name] = form[name]
+    try:
+        if len(form.getall("pilot_user_ids", [])) != 1 or not isinstance(form.get("pilot_user_ids"), str):
+            raise ValueError("请填写试点用户，或留空面向全部用户。")
+        values["telegram_ui.pilot_user_ids"] = normalize_pilot_user_ids(form["pilot_user_ids"])
+    except ValueError as exc:
+        errors["pilot_user_ids"] = str(exc)
+    if errors:
+        return _telegram_ui_page(form=form, errors=errors)
+    try:
+        await runtime_settings.set_many(values=values)
+    except Exception:
+        logger.exception("Web 保存 Telegram 功能设置失败")
+        return _telegram_ui_page(form=form, save_error=True)
+    raise web.HTTPSeeOther(location=f"{ADMIN_WEB_PATH.rstrip('/')}/telegram-ui?saved=1")
 
 
 async def ads_get(request: web.Request) -> web.Response:
@@ -2571,6 +2705,8 @@ def build_admin_routes() -> List[Tuple[str, str, Any]]:
         ("GET", f"{base}/logout", logout),
         ("GET", f"{base}/submit", submit_get),
         ("POST", f"{base}/submit", submit_post),
+        ("GET", f"{base}/telegram-ui", telegram_ui_get),
+        ("POST", f"{base}/telegram-ui", telegram_ui_post),
         ("GET", f"{base}/whitelist", whitelist_users_get),
         ("POST", f"{base}/whitelist", whitelist_users_post),
         ("GET", f"{base}/whitelist/profiles", whitelist_profiles_get),

@@ -208,14 +208,29 @@ async def test_rich_channel_content_survives_index_rebuild(
         await channel_listener.extract_message_info(message)
     )
     assert await channel_listener.save_channel_message(info)
+    async with isolated_db() as conn:
+        await conn.execute(
+            """INSERT INTO published_posts(message_id,title,caption,is_deleted,publish_time)
+               VALUES(79,'Deleted resource','deleteduniquetoken',1,0)"""
+        )
     engine = search_engine.get_search_engine()
+    manager = index_manager.IndexManager()
+    assert (await manager.get_index_stats())["in_sync"]
     with engine.ix.searcher() as searcher:
         from whoosh.query import Term
 
         assert len(searcher.search(Term("description", "uniquefoldedtoken"))) == 1
-    assert (await index_manager.IndexManager().rebuild_index())["success"]
+    rebuilt = await manager.rebuild_index()
+    assert rebuilt["success"] and rebuilt["added"] == 1
+    # Reopen the configured index, as the next process does after a restart.
+    from whoosh import index
+    engine.ix = index.open_dir(str(engine.index_dir), indexname=engine.index_name)
+    # A second incremental rebuild must not duplicate an already indexed post.
+    assert (await manager.rebuild_index(clear_first=False))["success"]
     with engine.ix.searcher() as searcher:
         assert len(searcher.search(Term("description", "uniquefoldedtoken"))) == 1
+        assert len(searcher.search(Term("description", "deleteduniquetoken"))) == 0
+    assert (await manager.get_index_stats())["in_sync"]
 
 
 def test_review_blocks_never_interpret_user_html():

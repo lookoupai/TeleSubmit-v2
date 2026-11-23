@@ -11,15 +11,7 @@ from utils.operation_service import (
     set_operation_state,
 )
 from utils.paid_ad_service import refund_one_credit
-
-UI_FEATURES = {
-    "disabled_buttons": "原生禁用按钮",
-    "ephemeral_feedback": "频道个人评分反馈",
-    "rich_review": "富消息审核卡片",
-    "rich_posts": "富消息频道投稿",
-    "order_widgets": "广告次数订单 Widget",
-    "slot_order_widgets": "广告位订单 Widget",
-}
+from utils.telegram_capabilities import UI_FEATURES, normalize_pilot_user_ids
 
 
 async def authorized(update):
@@ -35,24 +27,14 @@ async def ui_settings(update, context):
     if context.args:
         feature, *values = context.args
         if feature == "pilot_user_ids" and len(values) == 1:
-            ids = values[0].split(",")
-            if values[0] == "all":
-                await runtime_settings.set_many(
-                    values={"telegram_ui.pilot_user_ids": ""}
-                )
-            elif len(ids) <= 100 and all(
-                v.isascii() and v.isdigit() and 1 <= len(v) <= 19 and 0 < int(v) < 2**63
-                for v in ids
-            ):
-                pilot = ",".join(dict.fromkeys(str(int(v)) for v in ids))
-                await runtime_settings.set_many(
-                    values={"telegram_ui.pilot_user_ids": pilot}
-                )
-            else:
-                await update.effective_message.reply_text(
-                    "请提供逗号分隔的 Telegram 用户 ID，或输入 all。"
-                )
+            try:
+                pilot = normalize_pilot_user_ids(values[0])
+            except ValueError as exc:
+                await update.effective_message.reply_text(str(exc) + " 输入 all 可面向全部用户。")
                 return
+            await runtime_settings.set_many(
+                values={"telegram_ui.pilot_user_ids": pilot}
+            )
         elif feature in UI_FEATURES and values in (["on"], ["off"]):
             await runtime_settings.set_many(
                 values={"telegram_ui." + feature: str(values[0] == "on").lower()}

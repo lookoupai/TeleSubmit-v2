@@ -66,7 +66,9 @@ class IndexManager:
                 os.makedirs(index_dir, exist_ok=True)
                 from whoosh.index import create_in
                 # 使用模块级的 PostDocument，避免函数内重复导入造成作用域遮蔽
-                self.search_engine.ix = create_in(index_dir, PostDocument.get_schema())
+                self.search_engine.ix = create_in(
+                    index_dir, PostDocument.get_schema(), self.search_engine.index_name
+                )
                 logger.info(f"已重新创建索引: {index_dir}")
             
             # 2. 从数据库读取所有帖子
@@ -78,6 +80,7 @@ class IndexManager:
                 SELECT message_id, user_id, username, title, tags, link, 
                        filename, caption, source_content_json, publish_time, views, heat_score
                 FROM published_posts
+                WHERE is_deleted = 0
                 ORDER BY message_id
             ''')
             posts = await cursor.fetchall()
@@ -111,7 +114,7 @@ class IndexManager:
                         heat_score=post['heat_score'] or 0.0
                     )
                     
-                    self.search_engine.add_post(doc)
+                    self.search_engine.update_post(doc)
                     result["added"] += 1
                     logger.debug(f"已添加: message_id={post['message_id']}, 标题=\"{post['title'] or '(无)'}\"")
                     
@@ -125,7 +128,7 @@ class IndexManager:
             
             # 4. 验证索引
             with self.search_engine.ix.searcher() as searcher:
-                doc_count = searcher.doc_count_all()
+                doc_count = searcher.doc_count()
                 logger.info(f"索引中的文档数: {doc_count}")
             
             result["success"] = result["failed"] == 0
@@ -269,19 +272,23 @@ class IndexManager:
         try:
             # 数据库统计
             conn = await aiosqlite.connect(DB_PATH)
-            cursor = await conn.execute('SELECT COUNT(*) FROM published_posts')
-            db_count = (await cursor.fetchone())[0]
+            cursor = await conn.execute(
+                'SELECT message_id FROM published_posts WHERE is_deleted = 0'
+            )
+            db_ids = {str(row[0]) for row in await cursor.fetchall()}
+            db_count = len(db_ids)
             await conn.close()
             
             # 索引统计
             with self.search_engine.ix.searcher() as searcher:
-                index_count = searcher.doc_count_all()
+                index_ids = {str(doc['message_id']) for doc in searcher.all_stored_fields()}
+                index_count = searcher.doc_count()
             
             return {
                 "db_count": db_count,
                 "index_count": index_count,
-                "in_sync": db_count == index_count,
-                "difference": abs(db_count - index_count)
+                "in_sync": db_ids == index_ids and index_count == len(index_ids),
+                "difference": len(db_ids ^ index_ids) + index_count - len(index_ids)
             }
         
         except Exception as e:
